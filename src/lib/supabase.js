@@ -82,3 +82,22 @@ export function formatToLocalISODate(dateVal) {
     return String(dateVal).slice(0, 10);
   }
 }
+
+/**
+ * Returns the dynamic base application URL (Origin).
+ * In live production environments, dynamically captures the live domain/origin (e.g. https://nice-looking-portal.netlify.app or custom domain).
+ * In local development, dynamically captures current localhost and port (e.g. http://localhost:5173).
+ */
+export function getAppBaseUrl() {
+  if (typeof window !== "undefined" && window.location) {
+    const origin = window.location.origin;
+    if (origin && origin !== "null" && !origin.startsWith("file://")) {
+      return origin.replace(/\/+$/, "");
+    }
+    const protocol = window.location.protocol || "http:";
+    const host = window.location.host || (window.location.hostname ? `${window.location.hostname}${window.location.port ? `:${window.location.port}` : ""}` : "localhost:5173");
+    return `${protocol}//${host}`.replace(/\/+$/, "");
+  }
+  const fallback = typeof import.meta !== "undefined" && import.meta.env?.VITE_APP_URL ? import.meta.env.VITE_APP_URL : "http://localhost:5173";
+  return fallback.replace(/\/+$/, "");
+}

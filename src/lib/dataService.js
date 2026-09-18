@@ -1,4 +1,4 @@
-import { supabase, supabaseConfigured, createIsolatedClient, getMumbaiTodayISO, formatToLocalISODate } from "./supabase.js";
+import { supabase, supabaseConfigured, createIsolatedClient, getMumbaiTodayISO, formatToLocalISODate, getAppBaseUrl } from "./supabase.js";
 import { demoCustomers, demoProducts } from "../data/demo.js";
 import { normalizeWhatsAppNumber } from "./whatsapp.js";
 
@@ -231,6 +231,7 @@ export async function registerUser(email, password, name) {
   }
   if (supabase && supabase.auth) {
     const fullName = name?.trim() || "Staff";
+    const appOrigin = getAppBaseUrl();
     const { data, error } = await supabase.auth.signUp({
       email: cleanEmail,
       password,
@@ -238,7 +239,8 @@ export async function registerUser(email, password, name) {
         data: {
           full_name: fullName,
           name: fullName
-        }
+        },
+        emailRedirectTo: `${appOrigin}/`
       }
     });
     if (error) throw error;
@@ -249,7 +251,146 @@ export async function registerUser(email, password, name) {
 
     return data;
   }
-  throw new Error("Supabase is not configured. Please set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in your .env file.");
+  
+  // Offline / Demo Simulation
+  return {
+    user: {
+      id: "demo-user-" + Date.now(),
+      email: cleanEmail,
+      user_metadata: { full_name: name || "Staff" }
+    }
+  };
+}
+
+/**
+ * Verifies the 6-digit OTP code submitted by the user after registration.
+ * On success, validates user session, auto-logs-in if needed, and returns active session object.
+ */
+export async function verifySignUpOtp(email, token, password = null) {
+  const cleanEmail = String(email || "").trim().toLowerCase();
+  const cleanToken = String(token || "").trim();
+  if (!cleanEmail || !cleanToken) {
+    throw new Error("Email and 6-digit verification code are required.");
+  }
+
+  if (supabaseConfigured && supabase?.auth) {
+    // Attempt verification with 'signup' type (email OTP verification)
+    let { data, error } = await supabase.auth.verifyOtp({
+      email: cleanEmail,
+      token: cleanToken,
+      type: "signup"
+    });
+
+    // Fallback: If 'signup' type fails (e.g. Supabase instance uses 'email'), try 'email' type
+    if (error) {
+      const retry = await supabase.auth.verifyOtp({
+        email: cleanEmail,
+        token: cleanToken,
+        type: "email"
+      });
+      if (!retry.error) {
+        data = retry.data;
+        error = null;
+      }
+    }
+
+    if (error) {
+      throw new Error(error.message || "Invalid or expired OTP code. Please verify the code and try again.");
+    }
+
+    let activeSession = data?.session || null;
+
+    // If verifyOtp didn't generate a session token directly (e.g. Supabase confirmed email without issuing tokens),
+    // automatically sign in using the password from registration or get the active session.
+    if (!activeSession) {
+      if (password) {
+        try {
+          const loginRes = await supabase.auth.signInWithPassword({
+            email: cleanEmail,
+            password
+          });
+          if (loginRes.data?.session) {
+            activeSession = loginRes.data.session;
+          }
+        } catch (loginErr) {
+          console.warn("Auto sign-in after OTP verify fallback:", loginErr);
+        }
+      }
+      if (!activeSession) {
+        const { data: sessData } = await supabase.auth.getSession();
+        if (sessData?.session) {
+          activeSession = sessData.session;
+        }
+      }
+    }
+
+    // Record login/verification audit event asynchronously
+    const userId = activeSession?.user?.id || data?.user?.id;
+    const userEmail = activeSession?.user?.email || data?.user?.email || cleanEmail;
+    if (userId) {
+      logAuditEvent({
+        action: "REGISTER_OTP_VERIFIED",
+        entityType: "auth",
+        entityId: userId,
+        userId: userId,
+        userEmail: userEmail,
+        details: `User ${userEmail} verified OTP and logged into the portal.`
+      }).catch(err => console.warn("Failed to log OTP verify event:", err));
+    }
+
+    return activeSession || { user: data?.user || { id: userId, email: userEmail } };
+  }
+
+  // Offline / Demo verification simulation
+  if (cleanToken === "123456" || cleanToken.length === 6) {
+    const demoSession = {
+      user: {
+        id: "demo-user-" + Date.now(),
+        email: cleanEmail,
+        user_metadata: { full_name: "Staff Member" }
+      },
+      access_token: "demo-token-" + Date.now()
+    };
+    return demoSession;
+  }
+  throw new Error("Invalid demo verification code. Use 123456 in demo mode.");
+}
+
+/**
+ * Resends the signup confirmation OTP code to user's email.
+ */
+export async function resendSignUpOtp(email) {
+  const cleanEmail = String(email || "").trim().toLowerCase();
+  if (!cleanEmail) {
+    throw new Error("Email address is required to resend OTP.");
+  }
+
+  if (supabaseConfigured && supabase?.auth) {
+    const appOrigin = getAppBaseUrl();
+    const { data, error } = await supabase.auth.resend({
+      type: "signup",
+      email: cleanEmail,
+      options: {
+        emailRedirectTo: `${appOrigin}/`
+      }
+    });
+
+    if (error) {
+      // Fallback to signInWithOtp if signup resend fails
+      const retry = await supabase.auth.signInWithOtp({
+        email: cleanEmail,
+        options: {
+          shouldCreateUser: false,
+          emailRedirectTo: `${appOrigin}/`
+        }
+      });
+      if (retry.error) throw error;
+      return retry.data;
+    }
+    return data;
+  }
+
+  return { message: "Demo OTP code resent (Use: 123456)" };
 }
 
 export async function resetPasswordForEmail(email) {
@@ -258,12 +399,30 @@ export async function resetPasswordForEmail(email) {
     throw new Error("Please enter your registered email address.");
   }
   if (supabase && supabase.auth) {
-    const redirectUrl = `${window.location.origin}/reset-password`;
+    const redirectUrl = `${getAppBaseUrl()}/reset-password`;
     const { data, error } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
       redirectTo: redirectUrl
     });
     if (error) throw error;
     return data;
+  }
+  throw new Error("Supabase is not configured.");
+}
+
+export async function verifyPasswordResetOtp(email, token) {
+  const cleanEmail = String(email || "").trim().toLowerCase();
+  const cleanToken = String(token || "").trim();
+  if (!cleanEmail || !cleanToken) {
+    throw new Error("Email and OTP code are required.");
+  }
+  if (supabase && supabase.auth) {
+    const { data, error } = await supabase.auth.verifyOtp({
+      email: cleanEmail,
+      token: cleanToken,
+      type: "recovery"
+    });
+    if (error) throw error;
+    return data?.session || null;
   }
   throw new Error("Supabase is not configured.");
 }
@@ -404,6 +563,7 @@ export async function createStaffUser(email, password, fullName, actorInfo) {
       throw new Error("Could not initialize isolated Supabase client.");
     }
 
+    const appOrigin = getAppBaseUrl();
     const { data, error } = await isolatedClient.auth.signUp({
       email: cleanEmail,
       password,
@@ -411,7 +571,8 @@ export async function createStaffUser(email, password, fullName, actorInfo) {
         data: {
           full_name: cleanName,
           name: cleanName
-        }
+        },
+        emailRedirectTo: `${appOrigin}/`
       }
     });
 

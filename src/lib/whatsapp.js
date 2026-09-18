@@ -1,3 +1,5 @@
+import { getAppBaseUrl } from "./supabase.js";
+
 export function normalizeWhatsAppNumber(value) {
   const digits = String(value || "").replace(/\D/g, "");
   if (!digits) return "";
@@ -35,6 +37,7 @@ export function invoiceMessage(invoice, customSettings = null) {
     customSettings?.shop_address ||
     "";
 
+  const appOrigin = getAppBaseUrl();
   const custName = invoice?.customerName || invoice?.name || "Customer";
   const lines = [
     `Hello ${custName},`,
@@ -88,6 +91,9 @@ export function invoiceMessage(invoice, customSettings = null) {
   if (shopMobile) {
     lines.push(`📞 Contact: ${shopMobile}`);
   }
+  if (appOrigin) {
+    lines.push(`🌐 Portal: ${appOrigin}`);
+  }
   lines.push("");
   lines.push("Thank you,");
   lines.push(`${shopName}${shopSubtitle ? ` – ${shopSubtitle}` : ""}`);
@@ -97,6 +103,7 @@ export function invoiceMessage(invoice, customSettings = null) {
 
 export function offerMessage(offer, customSettings = null) {
   const shopName = customSettings?.shop_name || "NICE LOOKING";
+  const appOrigin = getAppBaseUrl();
   return [
     `🎉 Special Offer from ${shopName}`,
     "",
@@ -104,6 +111,7 @@ export function offerMessage(offer, customSettings = null) {
     offer?.description || "",
     offer?.discount ? `Discount: ${offer.discount}% OFF` : "",
     offer?.validUntil ? `Valid till: ${offer.validUntil}` : "",
+    appOrigin ? `🌐 Explore: ${appOrigin}` : "",
     "",
     `Contact ${shopName} today.`
   ].filter(Boolean).join("\n");

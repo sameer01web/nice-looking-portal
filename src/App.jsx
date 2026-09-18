@@ -40,14 +40,20 @@ import {
   Ban,
   Lock,
   RotateCcw,
-  Printer
+  Printer,
+  KeyRound,
+  Mail,
+  ArrowLeft
 } from "lucide-react";
-import { supabaseConfigured, getMumbaiTodayISO, formatToLocalISODate } from "./lib/supabase";
+import { supabaseConfigured, getMumbaiTodayISO, formatToLocalISODate, getAppBaseUrl } from "./lib/supabase";
 import {
   getSession,
   onAuthStateChange,
   loginUser,
   registerUser,
+  verifySignUpOtp,
+  resendSignUpOtp,
+  verifyPasswordResetOtp,
   resetPasswordForEmail,
   updatePassword,
   logoutUser,
@@ -132,6 +138,8 @@ export default function App() {
   const [userProfile, setUserProfile] = useState(null);
   const [authChecking, setAuthChecking] = useState(true);
   const [authMode, setAuthMode] = useState("login");
+  const [pendingEmail, setPendingEmail] = useState("");
+  const [pendingPassword, setPendingPassword] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
   const [authMessage, setAuthMessage] = useState({ text: "", type: "info" });
 
@@ -172,6 +180,12 @@ export default function App() {
           if (sess && sess.user) {
             setSession(sess);
             loadProfile(sess.user.id, sess.user.email);
+            // Clean up hash fragments if any
+            if (window.location.hash && (window.location.hash.includes("access_token") || window.location.hash.includes("error"))) {
+              if (window.history && window.history.replaceState) {
+                window.history.replaceState({}, document.title, window.location.pathname || "/");
+              }
+            }
           } else {
             setSession(null);
             setUserProfile(null);
@@ -200,6 +214,11 @@ export default function App() {
         if (sess && sess.user) {
           setSession(sess);
           loadProfile(sess.user.id, sess.user.email);
+          if (window.location.hash && (window.location.hash.includes("access_token") || window.location.hash.includes("error"))) {
+            if (window.history && window.history.replaceState) {
+              window.history.replaceState({}, document.title, window.location.pathname || "/");
+            }
+          }
         } else {
           setSession(null);
           setUserProfile(null);
@@ -222,34 +241,98 @@ export default function App() {
       if (authMode === "login") {
         const sess = await loginUser(email, password);
         setSession(sess);
-        if (sess?.user?.id) loadProfile(sess.user.id);
+        if (sess?.user?.id) loadProfile(sess.user.id, sess.user.email);
       } else {
+        setPendingEmail(email);
+        setPendingPassword(password);
         const regResult = await registerUser(email, password, name);
         if (regResult?.session) {
           setSession(regResult.session);
-          if (regResult.session.user?.id) loadProfile(regResult.session.user.id);
+          if (regResult.session.user?.id) loadProfile(regResult.session.user.id, regResult.session.user.email);
           setAuthMessage({
             text: "Account created and logged in successfully!",
             type: "success"
           });
-        } else if (regResult?.user && !regResult?.user?.confirmed_at && !regResult?.user?.email_confirmed_at) {
-          setAuthMessage({
-            text: "Registration successful! If email confirmation is enabled in your Supabase project, please verify your email. Otherwise, you can log in directly.",
-            type: "success"
-          });
-          setAuthMode("login");
         } else {
+          // Move smoothly to OTP verification mode
+          setPendingEmail(email);
+          setPendingPassword(password);
+          setAuthMode("verify-otp");
           setAuthMessage({
-            text: "Registration successful! You can now log in with your credentials.",
-            type: "success"
+            text: `Verification code sent to ${email}. Enter the 6-digit OTP below to access your dashboard.`,
+            type: "info"
           });
-          setAuthMode("login");
         }
       }
     } catch (err) {
       console.error("Auth submit error:", err);
       setAuthMessage({
         text: err.message || "Authentication failed. Please try again.",
+        type: "error"
+      });
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  async function handleVerifyOtp(email, otpToken) {
+    setAuthLoading(true);
+    setAuthMessage({ text: "", type: "info" });
+
+    try {
+      const sess = await verifySignUpOtp(email, otpToken, pendingPassword);
+      if (sess && (sess.access_token || sess.user)) {
+        setSession(sess);
+        if (sess.user?.id) {
+          loadProfile(sess.user.id, sess.user.email || email);
+        }
+        setAuthMode("login");
+        setPendingPassword("");
+        setAuthMessage({
+          text: "OTP verified successfully! Welcome to NICE LOOKING Portal.",
+          type: "success"
+        });
+      } else {
+        const currentSess = await getSession();
+        if (currentSess && currentSess.user) {
+          setSession(currentSess);
+          loadProfile(currentSess.user.id, currentSess.user.email || email);
+          setAuthMode("login");
+          setPendingPassword("");
+        } else if (pendingPassword) {
+          const loginSess = await loginUser(email, pendingPassword);
+          if (loginSess) {
+            setSession(loginSess);
+            if (loginSess.user?.id) loadProfile(loginSess.user.id, loginSess.user.email || email);
+            setAuthMode("login");
+            setPendingPassword("");
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Verify OTP error:", err);
+      setAuthMessage({
+        text: err.message || "Invalid or expired OTP code. Please check and try again.",
+        type: "error"
+      });
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  async function handleResendOtp(email) {
+    setAuthLoading(true);
+    setAuthMessage({ text: "", type: "info" });
+    try {
+      await resendSignUpOtp(email);
+      setAuthMessage({
+        text: `New 6-digit verification code sent to ${email}.`,
+        type: "success"
+      });
+    } catch (err) {
+      console.error("Resend OTP error:", err);
+      setAuthMessage({
+        text: err.message || "Could not resend OTP. Please try again.",
         type: "error"
       });
     } finally {
@@ -354,7 +437,11 @@ export default function App() {
     <AuthScreen
       mode={authMode}
       setMode={setAuthMode}
+      pendingEmail={pendingEmail}
+      setPendingEmail={setPendingEmail}
       onSubmit={handleAuthSubmit}
+      onVerifyOtp={handleVerifyOtp}
+      onResendOtp={handleResendOtp}
       onForgotPassword={handleForgotPassword}
       onUpdatePassword={handleUpdatePassword}
       loading={authLoading}
@@ -365,12 +452,110 @@ export default function App() {
 }
 
 // =====================================================================
+// 6-Digit OTP Box Component
+// =====================================================================
+function OtpInput({ length = 6, value = "", onChange, onComplete, disabled }) {
+  const inputsRef = React.useRef([]);
+
+  useEffect(() => {
+    if (!disabled) {
+      const firstEmptyIdx = (value || "").length < length ? (value || "").length : 0;
+      inputsRef.current[firstEmptyIdx]?.focus();
+    }
+  }, [disabled]);
+
+  const digits = useMemo(() => {
+    const arr = (value || "").split("").slice(0, length);
+    while (arr.length < length) arr.push("");
+    return arr;
+  }, [value, length]);
+
+  function handleChange(idx, e) {
+    const rawVal = e.target.value;
+    // Multi-digit paste or fast typing
+    if (rawVal.length > 1) {
+      const clean = rawVal.replace(/\D/g, "").slice(0, length);
+      onChange(clean);
+      if (clean.length === length && onComplete) {
+        onComplete(clean);
+      }
+      const nextIdx = Math.min(clean.length, length - 1);
+      inputsRef.current[nextIdx]?.focus();
+      return;
+    }
+
+    const char = rawVal.replace(/\D/g, "");
+    const newDigits = [...digits];
+    newDigits[idx] = char;
+    const combined = newDigits.join("");
+    onChange(combined);
+
+    if (char && idx < length - 1) {
+      inputsRef.current[idx + 1]?.focus();
+    }
+    if (combined.length === length && onComplete) {
+      onComplete(combined);
+    }
+  }
+
+  function handleKeyDown(idx, e) {
+    if (e.key === "Backspace") {
+      if (!digits[idx] && idx > 0) {
+        inputsRef.current[idx - 1]?.focus();
+      }
+    } else if (e.key === "ArrowLeft" && idx > 0) {
+      inputsRef.current[idx - 1]?.focus();
+    } else if (e.key === "ArrowRight" && idx < length - 1) {
+      inputsRef.current[idx + 1]?.focus();
+    }
+  }
+
+  function handlePaste(e) {
+    e.preventDefault();
+    const pasteData = e.clipboardData.getData("text").replace(/\D/g, "").slice(0, length);
+    if (!pasteData) return;
+    onChange(pasteData);
+    if (pasteData.length === length && onComplete) {
+      onComplete(pasteData);
+    }
+    const nextIdx = Math.min(pasteData.length, length - 1);
+    inputsRef.current[nextIdx]?.focus();
+  }
+
+  return (
+    <div className="otp-container" onPaste={handlePaste}>
+      {Array.from({ length }).map((_, idx) => (
+        <input
+          key={idx}
+          ref={el => (inputsRef.current[idx] = el)}
+          type="text"
+          inputMode="numeric"
+          pattern="[0-9]*"
+          maxLength={1}
+          autoComplete={idx === 0 ? "one-time-code" : "off"}
+          className={`otp-box ${digits[idx] ? "filled" : ""}`}
+          value={digits[idx] || ""}
+          disabled={disabled}
+          onChange={e => handleChange(idx, e)}
+          onKeyDown={e => handleKeyDown(idx, e)}
+          onFocus={e => e.target.select()}
+        />
+      ))}
+    </div>
+  );
+}
+
+// =====================================================================
 // Auth Screen
 // =====================================================================
 function AuthScreen({
   mode,
   setMode,
+  pendingEmail,
+  setPendingEmail,
   onSubmit,
+  onVerifyOtp,
+  onResendOtp,
   onForgotPassword,
   onUpdatePassword,
   loading,
@@ -383,6 +568,34 @@ function AuthScreen({
   const [registerConfirmPassword, setRegisterConfirmPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [otpCode, setOtpCode] = useState("");
+  const [resendCooldown, setResendCooldown] = useState(60);
+
+  // Sync email to pendingEmail if entering verify-otp mode
+  useEffect(() => {
+    if (pendingEmail && !email) {
+      setEmail(pendingEmail);
+    }
+  }, [pendingEmail, email]);
+
+  // Resend cooldown timer for OTP
+  useEffect(() => {
+    let timer;
+    if (mode === "verify-otp" && resendCooldown > 0) {
+      timer = setInterval(() => {
+        setResendCooldown(c => Math.max(0, c - 1));
+      }, 1000);
+    }
+    return () => clearInterval(timer);
+  }, [mode, resendCooldown]);
+
+  function handleResendClick() {
+    if (resendCooldown > 0) return;
+    const targetEmail = email || pendingEmail;
+    if (!targetEmail) return;
+    onResendOtp(targetEmail);
+    setResendCooldown(60);
+  }
 
   function handleSubmit(e) {
     e.preventDefault();
@@ -407,6 +620,13 @@ function AuthScreen({
         return;
       }
       onSubmit(email, password, name.trim());
+    } else if (mode === "verify-otp") {
+      const targetEmail = email || pendingEmail;
+      if (!targetEmail || otpCode.length < 6) {
+        if (setMessage) setMessage({ text: "Please enter the complete 6-digit OTP code.", type: "error" });
+        return;
+      }
+      onVerifyOtp(targetEmail, otpCode);
     } else if (mode === "forgot") {
       if (!email) return;
       onForgotPassword(email);
@@ -419,6 +639,7 @@ function AuthScreen({
   const titles = {
     login: "Welcome back",
     register: "Create your account",
+    "verify-otp": "Verify OTP Code",
     forgot: "Forgot Password?",
     reset: "Set new password"
   };
@@ -426,6 +647,7 @@ function AuthScreen({
   const subtitles = {
     login: "Hair Wig & Services Management",
     register: "Hair Wig & Services Management",
+    "verify-otp": "Enter the 6-digit verification OTP code sent to your email.",
     forgot: "Enter your registered email to receive a password reset link.",
     reset: "Enter and confirm your new password below."
   };
@@ -434,7 +656,7 @@ function AuthScreen({
     <div className="auth-page">
       <div className="auth-card">
         <div className="brand-mark">
-          <Scissors size={22} />
+          {mode === "verify-otp" ? <KeyRound size={22} /> : <Scissors size={22} />}
         </div>
         <div className="eyebrow">NICE LOOKING</div>
         <h1>{titles[mode] || "Welcome back"}</h1>
@@ -511,6 +733,59 @@ function AuthScreen({
             </label>
           )}
 
+          {mode === "verify-otp" && (
+            <div style={{ marginTop: "16px" }}>
+              <div style={{ textAlign: "center", marginBottom: "4px" }}>
+                <div className="otp-email-badge">
+                  <Mail size={13} />
+                  <span>{email || pendingEmail}</span>
+                </div>
+                <p style={{ fontSize: "12px", color: "var(--muted)", margin: "0 0 10px" }}>
+                  Please enter the 6-digit code sent to your email address:
+                </p>
+              </div>
+
+              <OtpInput
+                length={6}
+                value={otpCode}
+                onChange={setOtpCode}
+                onComplete={code => {
+                  if (code.length === 6) {
+                    onVerifyOtp(email || pendingEmail, code);
+                  }
+                }}
+                disabled={loading}
+              />
+
+              <div className="otp-resend-row">
+                {resendCooldown > 0 ? (
+                  <span className="timer-text">Resend code in {resendCooldown}s</span>
+                ) : (
+                  <button
+                    type="button"
+                    className="resend-btn"
+                    disabled={loading}
+                    onClick={handleResendClick}
+                  >
+                    <RotateCcw size={12} /> Resend OTP
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  className="link-btn"
+                  style={{ fontSize: "11.5px", padding: 0 }}
+                  onClick={() => {
+                    setMode("register");
+                    if (setMessage) setMessage({ text: "", type: "info" });
+                  }}
+                >
+                  Change Email / Back
+                </button>
+              </div>
+            </div>
+          )}
+
           {mode === "reset" && (
             <>
               <label>
@@ -553,7 +828,11 @@ function AuthScreen({
 
           {!supabaseConfigured && (
             <div className="demo-note" style={{ background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a" }}>
-              Supabase is not configured. Please add your <strong>VITE_SUPABASE_URL</strong> and <strong>VITE_SUPABASE_ANON_KEY</strong> to your <code>.env</code> file.
+              {mode === "verify-otp" ? (
+                <span><strong>Demo Mode:</strong> Supabase is in demo mode. Enter <strong>123456</strong> as the OTP code to verify and access dashboard.</span>
+              ) : (
+                <span>Supabase is not configured. Please add your <strong>VITE_SUPABASE_URL</strong> and <strong>VITE_SUPABASE_ANON_KEY</strong> to your <code>.env</code> file.</span>
+              )}
             </div>
           )}
 
@@ -563,6 +842,7 @@ function AuthScreen({
               loading ||
               (mode === "login" && (!email || !password)) ||
               (mode === "register" && (!name || !email || !password || !registerConfirmPassword)) ||
+              (mode === "verify-otp" && otpCode.length < 6) ||
               (mode === "forgot" && !email) ||
               (mode === "reset" && (!newPassword || !confirmPassword))
             }
@@ -573,7 +853,9 @@ function AuthScreen({
               : mode === "login"
               ? "Login"
               : mode === "register"
-              ? "Register Account"
+              ? "Register & Get OTP"
+              : mode === "verify-otp"
+              ? "Verify OTP & Continue"
               : mode === "forgot"
               ? "Send Reset Link"
               : "Update Password"}
@@ -601,6 +883,17 @@ function AuthScreen({
             }}
           >
             Already have an account? Login
+          </button>
+        ) : mode === "verify-otp" ? (
+          <button
+            className="link-btn"
+            type="button"
+            onClick={() => {
+              setMode("login");
+              if (setMessage) setMessage({ text: "", type: "info" });
+            }}
+          >
+            ← Back to Login
           </button>
         ) : (
           <button
@@ -2487,7 +2780,7 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
               <input
                 value={form.address}
                 onChange={e => update("address", e.target.value)}
-                placeholder="Customer address"
+                placeholder="Customer address (locality / area)"
               />
             </label>
 
@@ -2495,35 +2788,29 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
             <div className="line-items-section">
               <div className="line-items-header">
                 <div className="line-items-title">
-                  <Scissors size={17} style={{ color: "var(--blue)" }} />
-                  <span>Services & Products Included</span>
+                  <Scissors size={18} className="line-items-icon" />
+                  <span>Services & Products</span>
                   <span className="item-count-badge">
                     {form.items.length} {form.items.length === 1 ? "Item" : "Items"}
                   </span>
                 </div>
-                <button
-                  type="button"
-                  className="btn secondary small-btn"
-                  onClick={() => addLineItem("Hair Wig")}
-                  style={{ display: "inline-flex", alignItems: "center", gap: "5px" }}
-                >
-                  <Plus size={14} /> Add Line Item
-                </button>
               </div>
 
-              {/* Quick Tap Service Chips to Add New Item */}
+              {/* Quick Tap Service Chips to Add New Item (Smooth Horizontal Scroll on Mobile) */}
               <div className="quick-add-bar">
                 <span className="quick-add-label">+ Quick Add:</span>
-                {services.map(s => (
-                  <button
-                    key={s}
-                    type="button"
-                    className="quick-add-btn"
-                    onClick={() => addLineItem(s)}
-                  >
-                    <Plus size={12} /> {s}
-                  </button>
-                ))}
+                <div className="quick-add-chips-scroll">
+                  {services.map(s => (
+                    <button
+                      key={s}
+                      type="button"
+                      className="quick-add-btn"
+                      onClick={() => addLineItem(s)}
+                    >
+                      <Plus size={12} /> {s}
+                    </button>
+                  ))}
+                </div>
               </div>
 
               {/* Line Items List */}
@@ -2539,9 +2826,9 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
                     <div className="line-item-top">
                       <div className="line-item-index">
                         <span className="badge-num">{idx + 1}</span>
-                        <span>{it.service || "Service Line"}</span>
+                        <span className="line-item-name-heading">{it.service || "Service Line"}</span>
                         {isWig && prod && (
-                          <span style={{ fontSize: "11.5px", color: "var(--muted)", fontWeight: 600 }}>
+                          <span className="line-item-prod-hint">
                             • {prod.name} ({prod.size || "Standard"})
                           </span>
                         )}
@@ -2564,7 +2851,7 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
                     </div>
 
                     <div className="line-item-grid">
-                      <div>
+                      <div className="line-field line-col-service">
                         <label>Service Type *</label>
                         <select
                           required
@@ -2580,7 +2867,7 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
                       </div>
 
                       {isWig ? (
-                        <div>
+                        <div className="line-field line-col-product">
                           <label>Wig Product *</label>
                           <select
                             required
@@ -2600,7 +2887,7 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
                           </select>
                         </div>
                       ) : (
-                        <div>
+                        <div className="line-field line-col-note">
                           <label>Service Note / Details</label>
                           <input
                             type="text"
@@ -2611,7 +2898,7 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
                         </div>
                       )}
 
-                      <div>
+                      <div className="line-field line-col-price">
                         <label>{isWig ? "Unit Price" : "Charge *"}</label>
                         <div className="input-with-symbol">
                           <span className="input-currency-symbol">₹</span>
@@ -2627,7 +2914,7 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
                         </div>
                       </div>
 
-                      <div>
+                      <div className="line-field line-col-qty">
                         <label>Qty *</label>
                         <input
                           required
@@ -2641,9 +2928,9 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
                     </div>
 
                     {isWig && prod && (
-                      <div style={{ marginTop: "6px", display: "flex", justifyContent: "space-between", fontSize: "11.5px" }}>
-                        <span style={{ color: Number(prod.stock) < 3 ? "#dc2626" : "#059669", fontWeight: 600 }}>
-                          Available Stock: {prod.stock} unit(s)
+                      <div className="line-item-stock-info">
+                        <span style={{ color: Number(prod.stock) < 3 ? "#dc2626" : "#059669", fontWeight: 700 }}>
+                          ✓ Available Stock: {prod.stock} unit(s)
                         </span>
                         <span style={{ color: "var(--muted)" }}>
                           ₹{Number(prod.price).toLocaleString("en-IN")} × {it.quantity || 1} = <strong>{money(lineAmt)}</strong>
@@ -2656,9 +2943,9 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
             </div>
 
             {/* Payment Mode Selection: Cash or Online (UPI, Card, Netbanking) */}
-            <div className="span-2" style={{ marginBottom: "6px" }}>
-              <label style={{ marginBottom: "8px" }}>Payment Mode *</label>
-              <div style={{ display: "flex", gap: "10px" }}>
+            <div className="span-2 payment-mode-section">
+              <label className="section-field-label">Payment Mode *</label>
+              <div className="payment-mode-buttons">
                 <button
                   type="button"
                   className={`payment-mode-btn ${form.paymentCategory === "Cash" ? "active" : ""}`}
@@ -2666,7 +2953,7 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
                     setForm(f => ({ ...f, paymentCategory: "Cash", paymentMode: "Cash" }));
                   }}
                 >
-                  <BadgeIndianRupee size={17} /> Cash
+                  <BadgeIndianRupee size={18} /> Cash
                 </button>
                 <button
                   type="button"
@@ -2675,16 +2962,16 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
                     setForm(f => ({ ...f, paymentCategory: "Online", paymentMode: f.onlineSubMethod || "UPI" }));
                   }}
                 >
-                  <ShoppingBag size={17} /> Online
+                  <ShoppingBag size={18} /> Online
                 </button>
               </div>
 
               {form.paymentCategory === "Online" && (
-                <div style={{ marginTop: "10px", padding: "12px 14px", background: "#f1f5f9", borderRadius: "10px", border: "1px solid var(--border)" }}>
-                  <span style={{ fontSize: "11px", fontWeight: 700, color: "#475569", display: "block", marginBottom: "8px" }}>
+                <div className="online-methods-box">
+                  <span className="online-methods-title">
                     Select Online Method:
                   </span>
-                  <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                  <div className="online-chips-row">
                     {onlinePaymentMethods.map(method => (
                       <button
                         key={method}
@@ -2703,11 +2990,13 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
             </div>
 
             {/* Discount Section */}
-            <div className="span-2">
-              <div className="discount-quick-row">
-                <label style={{ margin: 0 }}>Discount (₹ or Quick % on Subtotal {money(subtotal)})</label>
+            <div className="span-2 discount-section">
+              <div className="discount-header-row">
+                <label className="section-field-label">
+                  Discount <span className="subtotal-hint">({money(subtotal)} Subtotal)</span>
+                </label>
                 <div className="discount-chips-group">
-                  <span style={{ fontSize: "11px", color: "var(--muted)", fontWeight: 600 }}>Quick %:</span>
+                  <span className="quick-pct-label">Quick %:</span>
                   {discountPercents.map(pct => {
                     const calc = Math.round((subtotal * pct) / 100);
                     const isActive = subtotal > 0 && String(form.discount) === String(calc);
@@ -2808,22 +3097,6 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
             <button className="btn primary" type="submit" disabled={submitting}>
               <FileText size={17} />{" "}
               {submitting ? "Saving & Deducting Stock..." : `Save & Generate Invoice (${money(total)})`}
-            </button>
-          </div>
-
-          {/* Sticky Quick POS Action Bar on Mobile */}
-          <div className="mobile-sticky-billing-bar">
-            <div className="bar-info">
-              <small>{form.items.length} Item(s) • {form.paymentMode}</small>
-              <strong>{money(total)}</strong>
-            </div>
-            <button
-              className="btn primary"
-              type="submit"
-              disabled={submitting}
-              style={{ padding: "10px 18px", fontSize: "13px" }}
-            >
-              <FileText size={16} /> {submitting ? "Saving..." : "Save Invoice"}
             </button>
           </div>
         </section>
@@ -3181,46 +3454,54 @@ function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
     <>
       <section className="panel">
         <div className="invoices-filter-bar">
-          <div className="toolbar" style={{ marginBottom: "8px", gap: "10px", flexWrap: "wrap" }}>
-            <div className="search" style={{ minWidth: "260px", flex: 2 }}>
+          <div className="invoices-search-status-row">
+            <div className="search">
               <Search size={17} />
               <input
                 value={search}
                 onChange={e => setSearch(e.target.value)}
-                placeholder="Search invoice #, customer, mobile, service, wig size, reason..."
+                placeholder="Search by invoice #, customer, mobile, service, wig..."
               />
+              {search && (
+                <button
+                  type="button"
+                  className="search-clear-btn"
+                  onClick={() => setSearch("")}
+                  title="Clear search"
+                >
+                  <X size={15} />
+                </button>
+              )}
             </div>
 
-            {/* Status Filter Chips: All, Active, Voided */}
-            <div className="invoice-period-chips" style={{ margin: 0 }}>
+            {/* Status Filter Segmented Tabs: All, Active, Voided */}
+            <div className="invoice-status-tabs">
               <button
                 type="button"
-                className={`period-chip ${statusTab === "all" ? "active" : ""}`}
+                className={`status-tab ${statusTab === "all" ? "active" : ""}`}
                 onClick={() => setStatusTab("all")}
               >
                 All ({invoices.length})
               </button>
               <button
                 type="button"
-                className={`period-chip ${statusTab === "active" ? "active" : ""}`}
+                className={`status-tab active-tab ${statusTab === "active" ? "active" : ""}`}
                 onClick={() => setStatusTab("active")}
-                style={statusTab === "active" ? { background: "#059669", color: "white" } : {}}
               >
                 Active ({activeCount})
               </button>
               <button
                 type="button"
-                className={`period-chip ${statusTab === "voided" ? "active" : ""}`}
+                className={`status-tab voided-tab ${statusTab === "voided" ? "active" : ""}`}
                 onClick={() => setStatusTab("voided")}
-                style={statusTab === "voided" ? { background: "#dc2626", color: "white" } : {}}
               >
                 Voided ({voidedCount})
               </button>
             </div>
           </div>
 
-          {/* Date Period Chips */}
-          <div className="invoice-period-chips">
+          {/* Date Period Chips with Smooth Touch Scroll */}
+          <div className="invoice-period-chips-scroll">
             {[
               { id: "all", label: "All Time" },
               { id: "today", label: "Today" },
@@ -4346,31 +4627,34 @@ function Products({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
 
   useEffect(() => {
     if (setHeaderAction) {
-      setHeaderAction(
-        <button className="btn primary small-btn" type="button" onClick={openAdd}>
-          <Plus size={15} /> Add Wig Stock
-        </button>
-      );
+      setHeaderAction(null);
     }
-    return () => {
-      if (setHeaderAction) setHeaderAction(null);
-    };
   }, [setHeaderAction]);
 
   return (
     <>
       <section className="panel">
-        <div className="toolbar">
-          <span className="muted">
-            Supported sizes: 5x7, 5x8, 6x8, 7x9, 8x10
-          </span>
-          <button
-            className="btn secondary"
-            type="button"
-            onClick={() => csvDownload(products, "nice-looking-wig-products.csv")}
-          >
-            <Download size={15} /> Export CSV
-          </button>
+        <div className="panel-head">
+          <div>
+            <h3>Wig Products & Stock Management</h3>
+            <p>Supported sizes: 5x7, 5x8, 6x8, 7x9, 8x10 • Track inventory and prices</p>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <button
+              className="btn primary"
+              type="button"
+              onClick={openAdd}
+            >
+              <Plus size={16} /> Add Wig Stock
+            </button>
+            <button
+              className="btn secondary"
+              type="button"
+              onClick={() => csvDownload(products, "nice-looking-wig-products.csv")}
+            >
+              <Download size={15} /> Export CSV
+            </button>
+          </div>
         </div>
 
         {/* Desktop Table View */}
