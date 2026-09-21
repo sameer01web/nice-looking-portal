@@ -245,29 +245,18 @@ export default function App() {
       } else {
         setPendingEmail(email);
         setPendingPassword(password);
-        const regResult = await registerUser(email, password, name);
-        if (regResult?.session) {
-          setSession(regResult.session);
-          if (regResult.session.user?.id) loadProfile(regResult.session.user.id, regResult.session.user.email);
-          setAuthMessage({
-            text: "Account created and logged in successfully!",
-            type: "success"
-          });
-        } else {
-          // Move smoothly to OTP verification mode
-          setPendingEmail(email);
-          setPendingPassword(password);
-          setAuthMode("verify-otp");
-          setAuthMessage({
-            text: `Verification code sent to ${email}. Enter the 6-digit OTP below to access your dashboard.`,
-            type: "info"
-          });
-        }
+        await registerUser(email, password, name);
+        // Always move to 6-digit OTP verification mode
+        setAuthMode("verify-otp");
+        setAuthMessage({
+          text: `A 6-digit verification code has been sent to ${email}. Please enter the OTP below to access your dashboard.`,
+          type: "info"
+        });
       }
     } catch (err) {
       console.error("Auth submit error:", err);
       setAuthMessage({
-        text: err.message || "Authentication failed. Please try again.",
+        text: err.message || "Registration failed. Please try again.",
         type: "error"
       });
     } finally {

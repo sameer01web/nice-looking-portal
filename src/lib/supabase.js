@@ -85,10 +85,14 @@ export function formatToLocalISODate(dateVal) {
 
 /**
  * Returns the dynamic base application URL (Origin).
- * In live production environments, dynamically captures the live domain/origin (e.g. https://nice-looking-portal.netlify.app or custom domain).
- * In local development, dynamically captures current localhost and port (e.g. http://localhost:5173).
+ * - In browser: Dynamically captures active origin (e.g. Netlify URL in production or current Vite localhost in development).
+ * - In production: Uses configured environment URL (VITE_APP_URL / Netlify URL) or Netlify deployment domain.
+ * - In development: Uses Vite localhost (http://localhost:5173, never hardcoded localhost:3000).
  */
 export function getAppBaseUrl() {
+  const metaEnv = typeof import.meta !== "undefined" && import.meta.env ? import.meta.env : (typeof process !== "undefined" && process.env ? process.env : {});
+  const envUrl = metaEnv.VITE_APP_URL || metaEnv.VITE_SITE_URL || metaEnv.SITE_URL || metaEnv.URL || metaEnv.DEPLOY_PRIME_URL;
+
   if (typeof window !== "undefined" && window.location) {
     const origin = window.location.origin;
     if (origin && origin !== "null" && !origin.startsWith("file://")) {
@@ -98,6 +102,16 @@ export function getAppBaseUrl() {
     const host = window.location.host || (window.location.hostname ? `${window.location.hostname}${window.location.port ? `:${window.location.port}` : ""}` : "localhost:5173");
     return `${protocol}//${host}`.replace(/\/+$/, "");
   }
-  const fallback = typeof import.meta !== "undefined" && import.meta.env?.VITE_APP_URL ? import.meta.env.VITE_APP_URL : "http://localhost:5173";
-  return fallback.replace(/\/+$/, "");
+
+  if (envUrl && typeof envUrl === "string") {
+    return envUrl.trim().replace(/\/+$/, "");
+  }
+
+  const isProd = metaEnv.PROD || metaEnv.NODE_ENV === "production";
+  if (isProd) {
+    return "https://nice-looking-portal.netlify.app";
+  }
+
+  // Vite development default port (5173)
+  return "http://localhost:5173";
 }

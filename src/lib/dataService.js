@@ -231,7 +231,6 @@ export async function registerUser(email, password, name) {
   }
   if (supabase && supabase.auth) {
     const fullName = name?.trim() || "Staff";
-    const appOrigin = getAppBaseUrl();
     const { data, error } = await supabase.auth.signUp({
       email: cleanEmail,
       password,
@@ -239,17 +238,36 @@ export async function registerUser(email, password, name) {
         data: {
           full_name: fullName,
           name: fullName
-        },
-        emailRedirectTo: `${appOrigin}/`
+        }
       }
     });
-    if (error) throw error;
+    if (error) {
+      const errMsg = (error.message || "").toLowerCase();
+      if (errMsg.includes("rate limit") || errMsg.includes("too many") || error.code === "over_email_send_rate_limit") {
+        throw new Error("Email sending rate limit reached. Please wait a few minutes before trying again, or configure custom SMTP in Supabase.");
+      }
+      if (errMsg.includes("already registered") || errMsg.includes("already exists")) {
+        throw new Error("An account with this email address already exists. Please log in or reset your password.");
+      }
+      throw error;
+    }
 
     if (data?.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
       throw new Error("An account with this email address already exists. Please log in or reset your password.");
     }
 
-    return data;
+    // Ensure session is cleared so user is never automatically logged into the Dashboard before OTP verification
+    if (data?.session) {
+      try {
+        await supabase.auth.signOut();
+      } catch {}
+    }
+
+    return {
+      user: data?.user,
+      email: cleanEmail,
+      requiresOtp: true
+    };
   }
   
   // Offline / Demo Simulation
@@ -258,7 +276,9 @@ export async function registerUser(email, password, name) {
       id: "demo-user-" + Date.now(),
       email: cleanEmail,
       user_metadata: { full_name: name || "Staff" }
-    }
+    },
+    email: cleanEmail,
+    requiresOtp: true
   };
 }
 
@@ -272,16 +292,19 @@ export async function verifySignUpOtp(email, token, password = null) {
   if (!cleanEmail || !cleanToken) {
     throw new Error("Email and 6-digit verification code are required.");
   }
+  if (cleanToken.length !== 6) {
+    throw new Error("Please enter a valid 6-digit OTP code.");
+  }
 
   if (supabaseConfigured && supabase?.auth) {
-    // Attempt verification with 'signup' type (email OTP verification)
+    // 1. Attempt verification with 'signup' type (email OTP verification)
     let { data, error } = await supabase.auth.verifyOtp({
       email: cleanEmail,
       token: cleanToken,
       type: "signup"
     });
 
-    // Fallback: If 'signup' type fails (e.g. Supabase instance uses 'email'), try 'email' type
+    // 2. Fallback: If 'signup' type fails (e.g. Supabase instance uses 'email'), try 'email' type
     if (error) {
       const retry = await supabase.auth.verifyOtp({
         email: cleanEmail,
@@ -295,7 +318,11 @@ export async function verifySignUpOtp(email, token, password = null) {
     }
 
     if (error) {
-      throw new Error(error.message || "Invalid or expired OTP code. Please verify the code and try again.");
+      const errMsg = (error.message || "").toLowerCase();
+      if (errMsg.includes("expired") || errMsg.includes("invalid") || errMsg.includes("token") || errMsg.includes("otp")) {
+        throw new Error("Invalid or expired 6-digit OTP code. Please verify the code or click 'Resend OTP'.");
+      }
+      throw new Error(error.message || "Invalid OTP code. Please check and try again.");
     }
 
     let activeSession = data?.session || null;
@@ -334,7 +361,7 @@ export async function verifySignUpOtp(email, token, password = null) {
         entityId: userId,
         userId: userId,
         userEmail: userEmail,
-        details: `User ${userEmail} verified OTP and logged into the portal.`
+        details: `User ${userEmail} verified 6-digit OTP and logged into the portal.`
       }).catch(err => console.warn("Failed to log OTP verify event:", err));
     }
 
@@ -366,31 +393,23 @@ export async function resendSignUpOtp(email) {
   }
 
   if (supabaseConfigured && supabase?.auth) {
-    const appOrigin = getAppBaseUrl();
     const { data, error } = await supabase.auth.resend({
       type: "signup",
-      email: cleanEmail,
-      options: {
-        emailRedirectTo: `${appOrigin}/`
-      }
+      email: cleanEmail
     });
 
     if (error) {
-      // Fallback to signInWithOtp if signup resend fails
-      const retry = await supabase.auth.signInWithOtp({
-        email: cleanEmail,
-        options: {
-          shouldCreateUser: false,
-          emailRedirectTo: `${appOrigin}/`
-        }
-      });
-      if (retry.error) throw error;
-      return retry.data;
+      console.warn("Supabase resend signup failed:", error);
+      const errMsg = (error.message || "").toLowerCase();
+      if (errMsg.includes("rate") || errMsg.includes("too many") || errMsg.includes("wait") || errMsg.includes("security")) {
+        throw new Error("Please wait a moment before requesting another OTP code.");
+      }
+      throw new Error(error.message || "Failed to resend OTP code. Please try again.");
     }
     return data;
   }
 
-  return { message: "Demo OTP code resent (Use: 123456)" };
+  return { message: "Demo OTP code resent (Use: 123456 in demo mode)" };
 }
 
 export async function resetPasswordForEmail(email) {
