@@ -1,0 +1,128 @@
+<!--
+  NICE LOOKING Portal - Supabase Auth Email Template: Confirm signup
+  
+  HOW TO APPLY IN SUPABASE DASHBOARD:
+  1. Open your Supabase project: https://supabase.com/dashboard/project/vcoeyueuwugfguivfuft
+  2. Navigate to: Authentication -> Email Templates -> "Confirm signup"
+  3. Subject: Confirm your signup - NICE LOOKING Portal
+  4. Body: Copy and paste the HTML below.
+  5. Click "Save changes".
+  
+  KEY VARIABLE:
+  Use {{ .Token }} for the 6-digit OTP numeric code (DO NOT use {{ .ConfirmationURL }}).
+-->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Confirm your signup</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      background-color: #f8fafc;
+      margin: 0;
+      padding: 30px 15px;
+      color: #1e293b;
+    }
+    .email-container {
+      max-width: 520px;
+      margin: 0 auto;
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+    }
+    .email-header {
+      background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+      padding: 32px 24px;
+      text-align: center;
+      color: #ffffff;
+    }
+    .brand-eyebrow {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 2px;
+      color: #94a3b8;
+      text-transform: uppercase;
+      margin-bottom: 6px;
+    }
+    .brand-title {
+      font-size: 22px;
+      font-weight: 800;
+      margin: 0;
+      letter-spacing: -0.5px;
+    }
+    .email-body {
+      padding: 32px 28px;
+    }
+    h2 {
+      font-size: 19px;
+      font-weight: 700;
+      color: #0f172a;
+      margin-top: 0;
+      margin-bottom: 12px;
+    }
+    p {
+      font-size: 14px;
+      line-height: 1.6;
+      color: #475569;
+      margin: 0 0 16px;
+    }
+    .otp-box-wrapper {
+      text-align: center;
+      margin: 28px 0;
+    }
+    .otp-code {
+      display: inline-block;
+      font-family: 'SF Mono', Consolas, Monaco, monospace;
+      font-size: 32px;
+      font-weight: 800;
+      letter-spacing: 8px;
+      color: #2563eb;
+      background: #eff6ff;
+      border: 2px dashed #bfdbfe;
+      border-radius: 12px;
+      padding: 16px 32px;
+    }
+    .otp-instruction {
+      font-size: 13px;
+      color: #64748b;
+      margin-top: 8px;
+    }
+    .email-footer {
+      background: #f8fafc;
+      border-top: 1px solid #f1f5f9;
+      padding: 20px 28px;
+      text-align: center;
+      font-size: 12px;
+      color: #94a3b8;
+    }
+  </style>
+</head>
+<body>
+  <div class="email-container">
+    <div class="email-header">
+      <div class="brand-eyebrow">Hair Wig &amp; Services Portal</div>
+      <div class="brand-title">NICE LOOKING</div>
+    </div>
+    <div class="email-body">
+      <h2>Confirm your registration</h2>
+      <p>Thank you for creating an account on the NICE LOOKING Portal. Please use the 6-digit verification code below to confirm your email address:</p>
+      
+      <div class="otp-box-wrapper">
+        <div class="otp-code">{{ .Token }}</div>
+        <div class="otp-instruction">Enter this 6-digit OTP code on the verification screen.</div>
+      </div>
+
+      <p>This verification code will expire in <strong>1 hour</strong>. After entering this code, your account will be verified and you can log in with your email and password.</p>
+      <p>If you did not register for this account, please disregard this email.</p>
+    </div>
+    <div class="email-footer">
+      &copy; NICE LOOKING &bull; Secure Hair Wig &amp; Services Management System
+    </div>
+  </div>
+</body>
+</html>

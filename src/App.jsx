@@ -249,7 +249,7 @@ export default function App() {
         // Always move to 6-digit OTP verification mode
         setAuthMode("verify-otp");
         setAuthMessage({
-          text: `A 6-digit verification code has been sent to ${email}. Please enter the OTP below to access your dashboard.`,
+          text: `A 6-digit verification code has been sent to ${email}. Please enter the OTP below to verify your account.`,
           type: "info"
         });
       }
@@ -269,39 +269,25 @@ export default function App() {
     setAuthMessage({ text: "", type: "info" });
 
     try {
-      const sess = await verifySignUpOtp(email, otpToken, pendingPassword);
-      if (sess && (sess.access_token || sess.user)) {
-        setSession(sess);
-        if (sess.user?.id) {
-          loadProfile(sess.user.id, sess.user.email || email);
-        }
-        setAuthMode("login");
-        setPendingPassword("");
-        setAuthMessage({
-          text: "OTP verified successfully! Welcome to NICE LOOKING Portal.",
-          type: "success"
-        });
-      } else {
-        const currentSess = await getSession();
-        if (currentSess && currentSess.user) {
-          setSession(currentSess);
-          loadProfile(currentSess.user.id, currentSess.user.email || email);
-          setAuthMode("login");
-          setPendingPassword("");
-        } else if (pendingPassword) {
-          const loginSess = await loginUser(email, pendingPassword);
-          if (loginSess) {
-            setSession(loginSess);
-            if (loginSess.user?.id) loadProfile(loginSess.user.id, loginSess.user.email || email);
-            setAuthMode("login");
-            setPendingPassword("");
-          }
-        }
-      }
+      const res = await verifySignUpOtp(email, otpToken);
+      
+      // CRITICAL: Ensure session is null and never auto-logged-in to Dashboard
+      setSession(null);
+      setUserProfile(null);
+      setPendingPassword("");
+      
+      // Redirect to Login page and show verification success message
+      const verifiedEmail = res?.email || email || pendingEmail;
+      setPendingEmail(verifiedEmail);
+      setAuthMode("login");
+      setAuthMessage({
+        text: "Account verified successfully! Please log in with your email and password.",
+        type: "success"
+      });
     } catch (err) {
       console.error("Verify OTP error:", err);
       setAuthMessage({
-        text: err.message || "Invalid or expired OTP code. Please check and try again.",
+        text: err.message || "Invalid or expired 6-digit OTP code. Please check and try again.",
         type: "error"
       });
     } finally {
@@ -560,12 +546,22 @@ function AuthScreen({
   const [otpCode, setOtpCode] = useState("");
   const [resendCooldown, setResendCooldown] = useState(60);
 
-  // Sync email to pendingEmail if entering verify-otp mode
+  // Sync email to pendingEmail when pendingEmail updates
   useEffect(() => {
-    if (pendingEmail && !email) {
+    if (pendingEmail) {
       setEmail(pendingEmail);
     }
-  }, [pendingEmail, email]);
+  }, [pendingEmail]);
+
+  // Mode change cleanup
+  useEffect(() => {
+    if (mode === "verify-otp") {
+      setOtpCode("");
+      setResendCooldown(60);
+    } else if (mode === "login") {
+      setPassword("");
+    }
+  }, [mode]);
 
   // Resend cooldown timer for OTP
   useEffect(() => {

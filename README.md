@@ -59,15 +59,16 @@ npm run build
 
 ## 🌟 Key Features
 
-1. **Supabase OTP Authentication & Registration**:
-   - Secure Staff & Admin login/registration with 6-digit OTP code verification.
-   - When registering, users receive a 6-digit OTP in their email, enter it in the 6-digit interactive code inputs, and directly land onto the Dashboard Home page.
-   - Dynamic live domain detection (`getAppBaseUrl()`): whether running on `localhost:5173` or a production domain (`https://portal.nicelooking.in`), all auth redirects and shared WhatsApp messages capture the active origin automatically.
-   - **Supabase Email Template Configuration**: In your [Supabase Dashboard](https://supabase.com/dashboard) under **Authentication > Email Templates > Confirm signup**, you can use the token variable `{{ .Token }}` so users receive the 6-digit OTP directly:
+1. **Supabase 6-Digit Email OTP Registration & Verification Flow**:
+   - Secure Staff & Admin registration with 6-digit email OTP verification.
+   - **Required Flow**: `Register → 6-Digit OTP Email → Enter 6-Digit OTP → Account Verified Banner → Login Page → Email + Password Login → Dashboard`.
+   - Never auto-logs into the Dashboard upon OTP verification; guarantees an explicit email + password login step after account activation.
+   - **Supabase Email Template Configuration**: In your [Supabase Dashboard](https://supabase.com/dashboard) under **Authentication > Email Templates > Confirm signup**, use the token variable `{{ .Token }}` so users receive the 6-digit OTP directly (and NOT `{{ .ConfirmationURL }}`):
      ```html
      <h2>Confirm your signup</h2>
-     <p>Your verification OTP is: <strong>{{ .Token }}</strong></p>
+     <p>Your 6-digit verification code is: <strong>{{ .Token }}</strong></p>
      ```
+   - Ready-to-use template file available at `supabase/email-templates/confirm_signup.html`.
 
 2. **Atomic Inventory & Stock Management**:
    - Stock deduction and restoration happen entirely at the PostgreSQL database level using atomic RPCs (`create_invoice_with_stock`, `update_invoice_with_stock`, `delete_invoice_with_stock`).

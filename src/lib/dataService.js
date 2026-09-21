@@ -284,9 +284,10 @@ export async function registerUser(email, password, name) {
 
 /**
  * Verifies the 6-digit OTP code submitted by the user after registration.
- * On success, validates user session, auto-logs-in if needed, and returns active session object.
+ * Explicitly signs out any generated session to ensure the user is not automatically logged into the Dashboard,
+ * requiring an explicit email + password login on the Login page.
  */
-export async function verifySignUpOtp(email, token, password = null) {
+export async function verifySignUpOtp(email, token) {
   const cleanEmail = String(email || "").trim().toLowerCase();
   const cleanToken = String(token || "").trim();
   if (!cleanEmail || !cleanToken) {
@@ -325,35 +326,15 @@ export async function verifySignUpOtp(email, token, password = null) {
       throw new Error(error.message || "Invalid OTP code. Please check and try again.");
     }
 
-    let activeSession = data?.session || null;
+    // Explicitly sign out so user is NEVER automatically logged into the Dashboard after OTP verification.
+    // The user must be redirected to the Login page to authenticate with email + password.
+    try {
+      await supabase.auth.signOut();
+    } catch {}
 
-    // If verifyOtp didn't generate a session token directly (e.g. Supabase confirmed email without issuing tokens),
-    // automatically sign in using the password from registration or get the active session.
-    if (!activeSession) {
-      if (password) {
-        try {
-          const loginRes = await supabase.auth.signInWithPassword({
-            email: cleanEmail,
-            password
-          });
-          if (loginRes.data?.session) {
-            activeSession = loginRes.data.session;
-          }
-        } catch (loginErr) {
-          console.warn("Auto sign-in after OTP verify fallback:", loginErr);
-        }
-      }
-      if (!activeSession) {
-        const { data: sessData } = await supabase.auth.getSession();
-        if (sessData?.session) {
-          activeSession = sessData.session;
-        }
-      }
-    }
-
-    // Record login/verification audit event asynchronously
-    const userId = activeSession?.user?.id || data?.user?.id;
-    const userEmail = activeSession?.user?.email || data?.user?.email || cleanEmail;
+    // Record verification audit event asynchronously
+    const userId = data?.user?.id;
+    const userEmail = data?.user?.email || cleanEmail;
     if (userId) {
       logAuditEvent({
         action: "REGISTER_OTP_VERIFIED",
@@ -361,24 +342,28 @@ export async function verifySignUpOtp(email, token, password = null) {
         entityId: userId,
         userId: userId,
         userEmail: userEmail,
-        details: `User ${userEmail} verified 6-digit OTP and logged into the portal.`
+        details: `User ${userEmail} verified 6-digit OTP successfully.`
       }).catch(err => console.warn("Failed to log OTP verify event:", err));
     }
 
-    return activeSession || { user: data?.user || { id: userId, email: userEmail } };
+    return {
+      success: true,
+      email: cleanEmail,
+      user: data?.user || { id: userId, email: userEmail }
+    };
   }
 
   // Offline / Demo verification simulation
   if (cleanToken === "123456" || cleanToken.length === 6) {
-    const demoSession = {
+    return {
+      success: true,
+      email: cleanEmail,
       user: {
         id: "demo-user-" + Date.now(),
         email: cleanEmail,
         user_metadata: { full_name: "Staff Member" }
-      },
-      access_token: "demo-token-" + Date.now()
+      }
     };
-    return demoSession;
   }
   throw new Error("Invalid demo verification code. Use 123456 in demo mode.");
 }
@@ -582,7 +567,6 @@ export async function createStaffUser(email, password, fullName, actorInfo) {
       throw new Error("Could not initialize isolated Supabase client.");
     }
 
-    const appOrigin = getAppBaseUrl();
     const { data, error } = await isolatedClient.auth.signUp({
       email: cleanEmail,
       password,
@@ -590,8 +574,7 @@ export async function createStaffUser(email, password, fullName, actorInfo) {
         data: {
           full_name: cleanName,
           name: cleanName
-        },
-        emailRedirectTo: `${appOrigin}/`
+        }
       }
     });
 
