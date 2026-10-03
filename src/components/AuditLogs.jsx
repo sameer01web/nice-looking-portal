@@ -15,6 +15,7 @@ import {
   ChevronRight,
   Clock,
   User,
+  Building2,
   X
 } from "lucide-react";
 import { fetchAuditLogs } from "../lib/dataService";
@@ -66,8 +67,11 @@ function ActionBadge({ action }) {
   if (a === "USER_ROLE_CHANGE") {
     return <span className="pill" style={{ background: "#fae8ff", color: "#a21caf", fontWeight: 700 }}>🛡️ Role Changed</span>;
   }
-  if (a === "STAFF_CREATE") {
+  if (a === "USER_CREATE" || a === "STAFF_CREATE") {
     return <span className="pill" style={{ background: "#eff6ff", color: "#1d4ed8", fontWeight: 700 }}>👤➕ Staff Created</span>;
+  }
+  if (a === "SALON_CREATE" || a === "SALON_UPDATE") {
+    return <span className="pill" style={{ background: "#fef3c7", color: "#b45309", fontWeight: 700 }}>🏢 Salon Branch</span>;
   }
   if (a === "SETTINGS_UPDATE") {
     return <span className="pill" style={{ background: "#f1f5f9", color: "#475569" }}>⚙️ Settings</span>;
@@ -82,6 +86,7 @@ function csvDownload(rows, filename) {
   if (!rows || !rows.length) return;
   const flat = rows.map(r => ({
     "Timestamp (IST)": formatTimestamp(r.createdAt),
+    "Salon / Branch": r.salonId || "default",
     "Action": r.action,
     "Entity": r.entityType,
     "Entity ID": r.entityId || "",
@@ -105,9 +110,10 @@ function csvDownload(rows, filename) {
   URL.revokeObjectURL(a.href);
 }
 
-export default function AuditLogs({ refreshTick, setHeaderAction }) {
+export default function AuditLogs({ refreshTick, setHeaderAction, currentSalon, availableSalons = [] }) {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [salonFilter, setSalonFilter] = useState(currentSalon?.id || "all");
   const [actionFilter, setActionFilter] = useState("ALL");
   const [period, setPeriod] = useState("all");
   const [customStart, setCustomStart] = useState("");
@@ -118,9 +124,16 @@ export default function AuditLogs({ refreshTick, setHeaderAction }) {
 
   const todayISO = useMemo(() => getMumbaiTodayISO(), []);
 
+  useEffect(() => {
+    if (currentSalon?.id) {
+      setSalonFilter(currentSalon.id);
+    }
+  }, [currentSalon?.id]);
+
   const loadData = useCallback(() => {
     setLoading(true);
-    fetchAuditLogs()
+    const filterSalonId = salonFilter === "all" ? null : salonFilter;
+    fetchAuditLogs({}, filterSalonId)
       .then(data => {
         setLogs(data || []);
         setLoading(false);
@@ -129,7 +142,7 @@ export default function AuditLogs({ refreshTick, setHeaderAction }) {
         console.error("Failed to load audit logs:", err);
         setLoading(false);
       });
-  }, []);
+  }, [salonFilter]);
 
   useEffect(() => {
     loadData();
@@ -168,10 +181,15 @@ export default function AuditLogs({ refreshTick, setHeaderAction }) {
     const st = staffSearch.toLowerCase().trim();
 
     return logs.filter(l => {
-      // 1. Period
+      // 1. Salon Branch Filter
+      if (salonFilter !== "all" && (l.salonId || l.salon_id || "default") !== salonFilter) {
+        return false;
+      }
+
+      // 2. Period
       if (!checkPeriodMatch(l.createdAt)) return false;
 
-      // 2. Action filter
+      // 3. Action filter
       if (actionFilter !== "ALL") {
         if (actionFilter === "INVOICES") {
           if (!["INVOICE_CREATE", "INVOICE_EDIT", "INVOICE_VOID", "INVOICE_DELETE"].includes(l.action)) return false;
@@ -184,7 +202,9 @@ export default function AuditLogs({ refreshTick, setHeaderAction }) {
         } else if (actionFilter === "CUSTOMERS") {
           if (!["CUSTOMER_CREATE", "CUSTOMER_UPDATE", "CUSTOMER_DELETE"].includes(l.action)) return false;
         } else if (actionFilter === "ROLES") {
-          if (!["USER_ROLE_CHANGE", "STAFF_CREATE"].includes(l.action)) return false;
+          if (!["USER_ROLE_CHANGE", "USER_CREATE", "STAFF_CREATE"].includes(l.action)) return false;
+        } else if (actionFilter === "SALONS") {
+          if (!["SALON_CREATE", "SALON_UPDATE", "SALON_DELETE"].includes(l.action)) return false;
         } else if (actionFilter === "LOGINS") {
           if (l.action !== "LOGIN") return false;
         } else if (l.action !== actionFilter) {
@@ -192,21 +212,21 @@ export default function AuditLogs({ refreshTick, setHeaderAction }) {
         }
       }
 
-      // 3. Staff Search
+      // 4. Staff Search
       if (st) {
         const staffMatch = (l.userName || "").toLowerCase().includes(st) || (l.userEmail || "").toLowerCase().includes(st);
         if (!staffMatch) return false;
       }
 
-      // 4. Query text
+      // 5. Query text
       if (q) {
-        const text = `${l.action} ${l.entityType} ${l.entityId || ""} ${l.details || ""} ${l.reason || ""} ${l.userName || ""} ${l.userEmail || ""}`.toLowerCase();
+        const text = `${l.action} ${l.entityType} ${l.entityId || ""} ${l.details || ""} ${l.reason || ""} ${l.userName || ""} ${l.userEmail || ""} ${l.salonId || ""}`.toLowerCase();
         if (!text.includes(q)) return false;
       }
 
       return true;
     });
-  }, [logs, actionFilter, period, customStart, customEnd, staffSearch, query, todayISO]);
+  }, [logs, salonFilter, actionFilter, period, customStart, customEnd, staffSearch, query, todayISO]);
 
   // Aggregate Metrics
   const metrics = useMemo(() => {
@@ -316,6 +336,30 @@ export default function AuditLogs({ refreshTick, setHeaderAction }) {
               />
             </div>
 
+            {availableSalons.length > 0 && (
+              <select
+                value={salonFilter}
+                onChange={e => setSalonFilter(e.target.value)}
+                style={{
+                  padding: "8px 12px",
+                  borderRadius: "8px",
+                  border: "1px solid #cbd5e1",
+                  fontSize: "13px",
+                  fontWeight: "600",
+                  background: "white",
+                  color: "#1e293b",
+                  cursor: "pointer"
+                }}
+              >
+                <option value="all">🏢 All Branches</option>
+                {availableSalons.map(s => (
+                  <option key={s.id} value={s.id}>
+                    {s.name} ({s.invoice_prefix || "NL"})
+                  </option>
+                ))}
+              </select>
+            )}
+
             <select
               className="action-filter-select"
               value={actionFilter}
@@ -339,6 +383,7 @@ export default function AuditLogs({ refreshTick, setHeaderAction }) {
               <option value="PRODUCTS">Products & Stock</option>
               <option value="CUSTOMERS">Customers</option>
               <option value="ROLES">Staff & Role Changes</option>
+              <option value="SALONS">Salon Branches</option>
               <option value="LOGINS">Logins</option>
             </select>
           </div>
@@ -423,6 +468,7 @@ export default function AuditLogs({ refreshTick, setHeaderAction }) {
                 <thead>
                   <tr>
                     <th style={{ width: "160px" }}>Date & Time</th>
+                    <th>Branch</th>
                     <th>Action</th>
                     <th>Performed By</th>
                     <th>Details & Description</th>
@@ -431,119 +477,147 @@ export default function AuditLogs({ refreshTick, setHeaderAction }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {filtered.map(log => (
-                    <tr key={log.id}>
-                      <td style={{ fontSize: "12px", color: "#475569", whiteSpace: "nowrap" }}>
-                        <div style={{ fontWeight: 600, color: "#1e293b" }}>
-                          {formatTimestamp(log.createdAt).split(",")[0]}
-                        </div>
-                        <small style={{ color: "#64748b" }}>
-                          {formatTimestamp(log.createdAt).split(",")[1]}
-                        </small>
-                      </td>
+                  {filtered.map(log => {
+                    const salonObj = availableSalons.find(s => s.id === (log.salonId || log.salon_id));
+                    const salonTag = salonObj?.name || (log.salonId === "default" ? "Bandra Main" : log.salonId || "Default");
 
-                      <td>
-                        <ActionBadge action={log.action} />
-                      </td>
+                    return (
+                      <tr key={log.id}>
+                        <td style={{ fontSize: "12px", color: "#475569", whiteSpace: "nowrap" }}>
+                          <div style={{ fontWeight: 600, color: "#1e293b" }}>
+                            {formatTimestamp(log.createdAt).split(",")[0]}
+                          </div>
+                          <small style={{ color: "#64748b" }}>
+                            {formatTimestamp(log.createdAt).split(",")[1]}
+                          </small>
+                        </td>
 
-                      <td>
-                        <div style={{ fontWeight: 600, color: "#1e293b" }}>{log.userName || "Staff"}</div>
-                        <small style={{ color: "#64748b" }}>{log.userEmail || "—"}</small>
-                        {log.userRole && (
+                        <td>
                           <span
                             className="role-pill-mini"
                             style={{
-                              marginLeft: "6px",
+                              background: "#f8fafc",
+                              color: "#334155",
+                              border: "1px solid #e2e8f0",
                               fontSize: "10px",
                               padding: "2px 6px",
-                              borderRadius: "10px",
-                              fontWeight: 700,
-                              background: log.userRole === "admin" ? "#eff6ff" : "#f1f5f9",
-                              color: log.userRole === "admin" ? "#1d4ed8" : "#475569"
+                              borderRadius: "6px",
+                              fontWeight: 600
                             }}
                           >
-                            {log.userRole.toUpperCase()}
+                            🏢 {salonTag}
                           </span>
-                        )}
-                      </td>
+                        </td>
 
-                      <td>
-                        <div style={{ fontWeight: 500, color: "#334155" }}>
-                          {log.details || `Action performed on ${log.entityType} (${log.entityId || "N/A"})`}
-                        </div>
-                      </td>
+                        <td>
+                          <ActionBadge action={log.action} />
+                        </td>
 
-                      <td>
-                        {log.reason ? (
-                          <span className="audit-reason-badge">
-                            "{log.reason}"
-                          </span>
-                        ) : (
-                          <span style={{ color: "#94a3b8" }}>—</span>
-                        )}
-                      </td>
+                        <td>
+                          <div style={{ fontWeight: 600, color: "#1e293b" }}>{log.userName || "Staff"}</div>
+                          <small style={{ color: "#64748b" }}>{log.userEmail || "—"}</small>
+                          {log.userRole && (
+                            <span
+                              className="role-pill-mini"
+                              style={{
+                                marginLeft: "6px",
+                                fontSize: "10px",
+                                padding: "2px 6px",
+                                borderRadius: "10px",
+                                fontWeight: 700,
+                                background: log.userRole === "superadmin" ? "#fef3c7" : log.userRole === "owner" ? "#fae8ff" : log.userRole === "admin" ? "#eff6ff" : "#f1f5f9",
+                                color: log.userRole === "superadmin" ? "#b45309" : log.userRole === "owner" ? "#86198f" : log.userRole === "admin" ? "#1d4ed8" : "#475569"
+                              }}
+                            >
+                              {log.userRole.toUpperCase()}
+                            </span>
+                          )}
+                        </td>
 
-                      <td style={{ textAlign: "right" }}>
-                        {(log.oldData || log.newData) ? (
-                          <button
-                            type="button"
-                            className="btn secondary small-btn"
-                            style={{ fontSize: "11px", padding: "4px 8px" }}
-                            onClick={() => setSelectedDiff(log)}
-                            title="View Old vs New Values"
-                          >
-                            <Eye size={13} /> View Diff
-                          </button>
-                        ) : (
-                          <span style={{ color: "#cbd5e1" }}>—</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
+                        <td>
+                          <div style={{ fontWeight: 500, color: "#334155" }}>
+                            {log.details || `Action performed on ${log.entityType} (${log.entityId || "N/A"})`}
+                          </div>
+                        </td>
+
+                        <td>
+                          {log.reason ? (
+                            <span className="audit-reason-badge">
+                              "{log.reason}"
+                            </span>
+                          ) : (
+                            <span style={{ color: "#94a3b8" }}>—</span>
+                          )}
+                        </td>
+
+                        <td style={{ textAlign: "right" }}>
+                          {(log.oldData || log.newData) ? (
+                            <button
+                              type="button"
+                              className="btn secondary small-btn"
+                              style={{ fontSize: "11px", padding: "4px 8px" }}
+                              onClick={() => setSelectedDiff(log)}
+                              title="View Old vs New Values"
+                            >
+                              <Eye size={13} /> View Diff
+                            </button>
+                          ) : (
+                            <span style={{ color: "#cbd5e1" }}>—</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
 
             {/* Mobile Cards */}
             <div className="mobile-only-cards mobile-card-list">
-              {filtered.map(log => (
-                <div className="mobile-card" key={log.id}>
-                  <div className="mobile-card-header">
-                    <div>
-                      <ActionBadge action={log.action} />
-                    </div>
-                    <div className="mobile-card-date" style={{ fontSize: "11px" }}>
-                      {formatTimestamp(log.createdAt)}
-                    </div>
-                  </div>
+              {filtered.map(log => {
+                const salonObj = availableSalons.find(s => s.id === (log.salonId || log.salon_id));
+                const salonTag = salonObj?.name || (log.salonId === "default" ? "Bandra Main" : log.salonId || "Default");
 
-                  <div className="mobile-card-body" style={{ marginTop: "6px" }}>
-                    <div style={{ fontWeight: 600, color: "#1e293b", fontSize: "13px" }}>
-                      {log.details || `${log.action} on ${log.entityType}`}
+                return (
+                  <div className="mobile-card" key={log.id}>
+                    <div className="mobile-card-header">
+                      <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                        <ActionBadge action={log.action} />
+                        <span style={{ fontSize: "10px", color: "#64748b" }}>🏢 {salonTag}</span>
+                      </div>
+                      <div className="mobile-card-date" style={{ fontSize: "11px" }}>
+                        {formatTimestamp(log.createdAt)}
+                      </div>
                     </div>
-                    <div style={{ fontSize: "12px", color: "#64748b", marginTop: "2px" }}>
-                      By: <strong>{log.userName || "Staff"}</strong> ({log.userRole || "staff"})
+
+                    <div className="mobile-card-body" style={{ marginTop: "6px" }}>
+                      <div style={{ fontWeight: 600, color: "#1e293b", fontSize: "13px" }}>
+                        {log.details || `${log.action} on ${log.entityType}`}
+                      </div>
+                      <div style={{ fontSize: "12px", color: "#64748b", marginTop: "2px" }}>
+                        By: <strong>{log.userName || "Staff"}</strong> ({log.userRole || "staff"})
+                      </div>
+                      {log.reason && (
+                        <div className="audit-reason-badge" style={{ marginTop: "6px" }}>
+                          Reason: "{log.reason}"
+                        </div>
+                      )}
                     </div>
-                    {log.reason && (
-                      <div className="audit-reason-badge" style={{ marginTop: "6px" }}>
-                        Reason: "{log.reason}"
+
+                    {(log.oldData || log.newData) && (
+                      <div className="mobile-card-actions" style={{ marginTop: "8px" }}>
+                        <button
+                          type="button"
+                          className="btn secondary full small-btn"
+                          onClick={() => setSelectedDiff(log)}
+                        >
+                          <Eye size={14} /> View Change Diff
+                        </button>
                       </div>
                     )}
                   </div>
-
-                  {(log.oldData || log.newData) && (
-                    <div className="mobile-card-actions" style={{ marginTop: "8px" }}>
-                      <button
-                        type="button"
-                        className="btn secondary full small-btn"
-                        onClick={() => setSelectedDiff(log)}
-                      >
-                        <Eye size={14} /> View Change Diff
-                      </button>
-                    </div>
-                  )}
-                </div>
-              ))}
+                );
+              })}
             </div>
           </>
         ) : (
@@ -580,6 +654,10 @@ export default function AuditLogs({ refreshTick, setHeaderAction }) {
                   <div>
                     <span style={{ color: "#64748b" }}>Timestamp: </span>
                     <strong>{formatTimestamp(selectedDiff.createdAt)}</strong>
+                  </div>
+                  <div>
+                    <span style={{ color: "#64748b" }}>Branch / Salon: </span>
+                    <strong>{selectedDiff.salonId || "default"}</strong>
                   </div>
                   <div>
                     <span style={{ color: "#64748b" }}>Performed By: </span>

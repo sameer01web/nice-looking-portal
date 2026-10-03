@@ -8,7 +8,10 @@
     "build": "vite build",
     "preview": "vite preview",
     "netlify": "netlify",
-    "supabase": "supabase"
+    "supabase": "supabase",
+    "db:link": "supabase link --project-ref vcoeyueuwugfguivfuft",
+    "db:push": "supabase db push",
+    "setup:resend": "node scripts/setup_resend_smtp.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.55.0",

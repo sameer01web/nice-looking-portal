@@ -6,8 +6,10 @@ import {
   CheckCircle,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
   Download,
   Eye,
+  EyeOff,
   FileText,
   Grid,
   IndianRupee,
@@ -43,7 +45,10 @@ import {
   Printer,
   KeyRound,
   Mail,
-  ArrowLeft
+  ArrowLeft,
+  Building2,
+  Crown,
+  ExternalLink
 } from "lucide-react";
 import { supabaseConfigured, getMumbaiTodayISO, formatToLocalISODate, getAppBaseUrl } from "./lib/supabase";
 import {
@@ -56,6 +61,7 @@ import {
   verifyPasswordResetOtp,
   resetPasswordForEmail,
   updatePassword,
+  changeFirstLoginPassword,
   logoutUser,
   fetchUserProfile,
   fetchAuditLogs,
@@ -75,12 +81,16 @@ import {
   fetchSettings,
   saveSettings,
   getBusinessSettings,
-  saveBusinessSettings
+  saveBusinessSettings,
+  fetchSalons,
+  saveSalon,
+  deleteSalon
 } from "./lib/dataService";
 import { invoiceMessage, offerMessage, openWhatsApp, normalizeWhatsAppNumber } from "./lib/whatsapp";
 import AuditLogs from "./components/AuditLogs";
 import StaffManagement from "./components/StaffManagement";
 import AccessRestricted from "./components/AccessRestricted";
+import SalonManagement from "./components/SalonManagement";
 
 const services = [
   "Hair Wig",
@@ -243,20 +253,17 @@ export default function App() {
         setSession(sess);
         if (sess?.user?.id) loadProfile(sess.user.id, sess.user.email);
       } else {
-        setPendingEmail(email);
-        setPendingPassword(password);
-        await registerUser(email, password, name);
-        // Always move to 6-digit OTP verification mode
-        setAuthMode("verify-otp");
+        // Redirect any legacy registration attempts to login
+        setAuthMode("login");
         setAuthMessage({
-          text: `A 6-digit verification code has been sent to ${email}. Please enter the OTP below to verify your account.`,
+          text: "Registration is disabled. Please log in using credentials provided by your Administrator.",
           type: "info"
         });
       }
     } catch (err) {
       console.error("Auth submit error:", err);
       setAuthMessage({
-        text: err.message || "Registration failed. Please try again.",
+        text: err.message || "Authentication failed. Please check your credentials.",
         type: "error"
       });
     } finally {
@@ -406,11 +413,22 @@ export default function App() {
     );
   }
 
-  return session && authMode !== "reset" ? (
+  // Force first-time password change if user logged in with a temporary password
+  if (session && userProfile?.mustChangePassword) {
+    return (
+      <FirstLoginPasswordChange
+        userProfile={userProfile}
+        onPasswordChanged={updated => setUserProfile(updated)}
+        onLogout={handleLogout}
+      />
+    );
+  }
+
+  return session && authMode !== "reset" && authMode !== "verify-otp" ? (
     <DashboardShell session={session} userProfile={userProfile} onLogout={handleLogout} />
   ) : (
     <AuthScreen
-      mode={authMode}
+      mode={authMode === "register" ? "login" : authMode}
       setMode={setAuthMode}
       pendingEmail={pendingEmail}
       setPendingEmail={setPendingEmail}
@@ -521,7 +539,160 @@ function OtpInput({ length = 6, value = "", onChange, onComplete, disabled }) {
 }
 
 // =====================================================================
-// Auth Screen
+// First-Time Login Force Password Change Component
+// =====================================================================
+function FirstLoginPasswordChange({ userProfile, onPasswordChanged, onLogout }) {
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
+  const [successMsg, setSuccessMsg] = useState("");
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setErrorMsg("");
+    setSuccessMsg("");
+
+    if (!newPassword || newPassword.length < 6) {
+      setErrorMsg("Password must be at least 6 characters long.");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setErrorMsg("Passwords do not match. Please enter identical passwords.");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await changeFirstLoginPassword(newPassword, userProfile);
+      setSuccessMsg("Permanent password set successfully! Redirecting to Dashboard...");
+      setTimeout(() => {
+        onPasswordChanged({
+          ...userProfile,
+          mustChangePassword: false
+        });
+      }, 700);
+    } catch (err) {
+      console.error("Failed to update permanent password:", err);
+      setErrorMsg(err.message || "Failed to update permanent password.");
+      setLoading(false);
+    }
+  }
+
+  const isOwner = userProfile?.role === "owner";
+  const isSuper = userProfile?.role === "superadmin";
+
+  return (
+    <div className="first-login-overlay">
+      <div className="first-login-card">
+        <div className="first-login-header">
+          <div className="first-login-icon">
+            <Lock size={26} />
+          </div>
+          <div className="eyebrow" style={{ color: "#d97706", fontWeight: 700, marginBottom: "4px" }}>
+            MANDATORY FIRST-TIME LOGIN
+          </div>
+          <h2 className="first-login-title">Set Your Permanent Password</h2>
+          <p className="first-login-subtitle">
+            Welcome, <strong>{userProfile?.fullName || "User"}</strong>! Your account was created with a temporary password by your administrator. You must set a permanent password before entering the NICE LOOKING Portal.
+          </p>
+          <div className="first-login-user-pill">
+            <span>✉️ {userProfile?.email}</span>
+            <span>•</span>
+            <span style={{ fontWeight: 700, color: isOwner ? "#86198f" : isSuper ? "#b45309" : "#1d4ed8" }}>
+              {isSuper ? "👑 Platform Admin" : isOwner ? "⭐ Salon Owner" : "👤 Staff Account"}
+            </span>
+          </div>
+        </div>
+
+        {errorMsg && (
+          <div className="alert danger" style={{ background: "#fee2e2", color: "#b91c1c", borderColor: "#fca5a5", marginBottom: "16px" }}>
+            {errorMsg}
+          </div>
+        )}
+
+        {successMsg && (
+          <div className="alert success-box" style={{ background: "#eff6ff", color: "#1d4ed8", borderColor: "#bfdbfe", marginBottom: "16px" }}>
+            {successMsg}
+          </div>
+        )}
+
+        <form onSubmit={handleSubmit}>
+          <label style={{ display: "block", marginBottom: "12px" }}>
+            New Permanent Password *
+            <div style={{ position: "relative", marginTop: "4px" }}>
+              <input
+                type={showPassword ? "text" : "password"}
+                required
+                minLength={6}
+                placeholder="•••••••• (min 6 characters)"
+                value={newPassword}
+                onChange={e => setNewPassword(e.target.value)}
+                style={{ paddingRight: "40px", width: "100%" }}
+              />
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => setShowPassword(!showPassword)}
+                style={{ position: "absolute", right: "6px", top: "50%", transform: "translateY(-50%)", border: "none", background: "none" }}
+              >
+                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
+          </label>
+
+          <label style={{ display: "block", marginBottom: "16px" }}>
+            Confirm Permanent Password *
+            <div style={{ position: "relative", marginTop: "4px" }}>
+              <input
+                type={showPassword ? "text" : "password"}
+                required
+                minLength={6}
+                placeholder="••••••••"
+                value={confirmPassword}
+                onChange={e => setConfirmPassword(e.target.value)}
+                style={{ paddingRight: "40px", width: "100%" }}
+              />
+            </div>
+          </label>
+
+          <div className="pwd-rules-box">
+            <strong>Security Requirements:</strong>
+            <ul>
+              <li>At least 6 characters long</li>
+              <li>Must be unique and known only to you</li>
+              <li>Once set, you will use this password for all future logins</li>
+            </ul>
+          </div>
+
+          <div style={{ display: "flex", gap: "10px", marginTop: "20px" }}>
+            <button
+              type="button"
+              className="btn secondary"
+              onClick={onLogout}
+              disabled={loading}
+              style={{ flex: 1 }}
+            >
+              Sign Out
+            </button>
+            <button
+              type="submit"
+              className="btn primary"
+              disabled={loading || !newPassword || !confirmPassword}
+              style={{ flex: 2 }}
+            >
+              {loading ? "Updating Password..." : "Save Password & Enter"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// =====================================================================
+// Auth Screen (Private Enterprise Mode - No Public Registration)
 // =====================================================================
 function AuthScreen({
   mode,
@@ -537,10 +708,8 @@ function AuthScreen({
   message,
   setMessage
 }) {
-  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [registerConfirmPassword, setRegisterConfirmPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [otpCode, setOtpCode] = useState("");
@@ -587,24 +756,6 @@ function AuthScreen({
     if (mode === "login") {
       if (!email || !password) return;
       onSubmit(email, password);
-    } else if (mode === "register") {
-      if (!name.trim()) {
-        if (setMessage) setMessage({ text: "Please enter your full name.", type: "error" });
-        return;
-      }
-      if (!email || !password) {
-        if (setMessage) setMessage({ text: "Email and password are required.", type: "error" });
-        return;
-      }
-      if (password.length < 6) {
-        if (setMessage) setMessage({ text: "Password must be at least 6 characters long.", type: "error" });
-        return;
-      }
-      if (password !== registerConfirmPassword) {
-        if (setMessage) setMessage({ text: "Passwords do not match. Please re-enter identical passwords.", type: "error" });
-        return;
-      }
-      onSubmit(email, password, name.trim());
     } else if (mode === "verify-otp") {
       const targetEmail = email || pendingEmail;
       if (!targetEmail || otpCode.length < 6) {
@@ -623,7 +774,6 @@ function AuthScreen({
 
   const titles = {
     login: "Welcome back",
-    register: "Create your account",
     "verify-otp": "Verify OTP Code",
     forgot: "Forgot Password?",
     reset: "Set new password"
@@ -631,7 +781,6 @@ function AuthScreen({
 
   const subtitles = {
     login: "Hair Wig & Services Management",
-    register: "Hair Wig & Services Management",
     "verify-otp": "Enter the 6-digit verification OTP code sent to your email.",
     forgot: "Enter your registered email to receive a password reset link.",
     reset: "Enter and confirm your new password below."
@@ -648,21 +797,9 @@ function AuthScreen({
         <p className="muted">{subtitles[mode] || "Hair Wig & Services Management"}</p>
 
         <form onSubmit={handleSubmit}>
-          {mode === "register" && (
+          {(mode === "login" || mode === "forgot") && (
             <label>
-              Full Name
-              <input
-                required
-                value={name}
-                onChange={e => setName(e.target.value)}
-                placeholder="e.g. Sameer Shaikh"
-              />
-            </label>
-          )}
-
-          {(mode === "login" || mode === "register" || mode === "forgot") && (
-            <label>
-              Email
+              Email / User ID
               <input
                 type="email"
                 required
@@ -673,7 +810,7 @@ function AuthScreen({
             </label>
           )}
 
-          {(mode === "login" || mode === "register") && (
+          {mode === "login" && (
             <div>
               <label>
                 Password
@@ -686,36 +823,20 @@ function AuthScreen({
                   placeholder="•••••••• (min 6 characters)"
                 />
               </label>
-              {mode === "login" && (
-                <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "6px" }}>
-                  <button
-                    type="button"
-                    className="link-btn"
-                    style={{ padding: 0, fontSize: "11px", fontWeight: "600", color: "var(--blue)" }}
-                    onClick={() => {
-                      setMode("forgot");
-                      if (setMessage) setMessage({ text: "", type: "info" });
-                    }}
-                  >
-                    Forgot Password?
-                  </button>
-                </div>
-              )}
+              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "6px" }}>
+                <button
+                  type="button"
+                  className="link-btn"
+                  style={{ padding: 0, fontSize: "11px", fontWeight: "600", color: "var(--blue)" }}
+                  onClick={() => {
+                    setMode("forgot");
+                    if (setMessage) setMessage({ text: "", type: "info" });
+                  }}
+                >
+                  Forgot Password?
+                </button>
+              </div>
             </div>
-          )}
-
-          {mode === "register" && (
-            <label>
-              Confirm Password
-              <input
-                type="password"
-                required
-                minLength={6}
-                value={registerConfirmPassword}
-                onChange={e => setRegisterConfirmPassword(e.target.value)}
-                placeholder="••••••••"
-              />
-            </label>
           )}
 
           {mode === "verify-otp" && (
@@ -761,11 +882,11 @@ function AuthScreen({
                   className="link-btn"
                   style={{ fontSize: "11.5px", padding: 0 }}
                   onClick={() => {
-                    setMode("register");
+                    setMode("login");
                     if (setMessage) setMessage({ text: "", type: "info" });
                   }}
                 >
-                  Change Email / Back
+                  ← Back to Login
                 </button>
               </div>
             </div>
@@ -826,7 +947,6 @@ function AuthScreen({
             disabled={
               loading ||
               (mode === "login" && (!email || !password)) ||
-              (mode === "register" && (!name || !email || !password || !registerConfirmPassword)) ||
               (mode === "verify-otp" && otpCode.length < 6) ||
               (mode === "forgot" && !email) ||
               (mode === "reset" && (!newPassword || !confirmPassword))
@@ -836,9 +956,7 @@ function AuthScreen({
             {loading
               ? "Please wait..."
               : mode === "login"
-              ? "Login"
-              : mode === "register"
-              ? "Register & Get OTP"
+              ? "Sign In"
               : mode === "verify-otp"
               ? "Verify OTP & Continue"
               : mode === "forgot"
@@ -847,40 +965,7 @@ function AuthScreen({
           </button>
         </form>
 
-        {mode === "login" ? (
-          <button
-            className="link-btn"
-            type="button"
-            onClick={() => {
-              setMode("register");
-              if (setMessage) setMessage({ text: "", type: "info" });
-            }}
-          >
-            Create a new account
-          </button>
-        ) : mode === "register" ? (
-          <button
-            className="link-btn"
-            type="button"
-            onClick={() => {
-              setMode("login");
-              if (setMessage) setMessage({ text: "", type: "info" });
-            }}
-          >
-            Already have an account? Login
-          </button>
-        ) : mode === "verify-otp" ? (
-          <button
-            className="link-btn"
-            type="button"
-            onClick={() => {
-              setMode("login");
-              if (setMessage) setMessage({ text: "", type: "info" });
-            }}
-          >
-            ← Back to Login
-          </button>
-        ) : (
+        {mode !== "login" && (
           <button
             className="link-btn"
             type="button"
@@ -892,6 +977,13 @@ function AuthScreen({
             ← Back to Login
           </button>
         )}
+
+        <div className="private-access-notice">
+          <Shield size={18} style={{ color: "#d97706", flexShrink: 0 }} />
+          <span>
+            <strong>Private Portal:</strong> Accounts & temporary passwords are created by the Application Admin or Salon Owner.
+          </span>
+        </div>
       </div>
     </div>
   );
@@ -907,6 +999,11 @@ function DashboardShell({ session, userProfile, onLogout }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [refreshTick, setRefreshTick] = useState(0);
   const [headerAction, setHeaderAction] = useState(null);
+  const [salons, setSalons] = useState([]);
+  const [currentSalonId, setCurrentSalonId] = useState(() => {
+    return localStorage.getItem("nice-looking-active-salon-id") || userProfile?.salonId || "default";
+  });
+  const [salonDropdownOpen, setSalonDropdownOpen] = useState(false);
   const [settings, setSettings] = useState({
     shop_name: "NICE LOOKING",
     shop_subtitle: "Hair Wig & Hair Services",
@@ -916,28 +1013,6 @@ function DashboardShell({ session, userProfile, onLogout }) {
     whatsapp_number: "919876543210"
   });
 
-  const loadSettings = useCallback(async () => {
-    try {
-      const s = await fetchSettings();
-      if (s) setSettings(s);
-    } catch (err) {
-      console.warn("Failed to load settings in DashboardShell:", err);
-    }
-  }, []);
-
-  const triggerGlobalRefresh = useCallback(() => {
-    setRefreshTick(t => t + 1);
-  }, []);
-
-  useEffect(() => {
-    loadSettings();
-  }, [loadSettings, refreshTick]);
-
-  // Clear header action when switching tabs
-  useEffect(() => {
-    setHeaderAction(null);
-  }, [page]);
-
   const userEmail = session?.user?.email || "staff@nicelooking.com";
   const userName =
     userProfile?.fullName ||
@@ -945,17 +1020,105 @@ function DashboardShell({ session, userProfile, onLogout }) {
     userEmail.split("@")[0].toUpperCase() ||
     "Staff";
   const userRole = userProfile?.role || "staff";
-  const isAdmin = userRole === "admin" || userRole === "owner";
+  const isSuperAdmin = userRole === "superadmin";
+  const isOwner = userRole === "owner";
+  const isAdmin = isSuperAdmin || isOwner || userRole === "admin";
   const userInitials = (userName.slice(0, 2) || "NL").toUpperCase();
+
+  const triggerGlobalRefresh = useCallback(() => {
+    setRefreshTick(t => t + 1);
+  }, []);
+
+  // Fetch available salons for user
+  const loadSalons = useCallback(async () => {
+    try {
+      const list = await fetchSalons(userRole, userProfile?.salonId, userProfile?.assignedSalons, userEmail);
+      if (Array.isArray(list) && list.length > 0) {
+        setSalons(list);
+        if (!list.some(s => s.id === currentSalonId)) {
+          const fallbackId = list[0]?.id || "default";
+          setCurrentSalonId(fallbackId);
+          try {
+            localStorage.setItem("nice-looking-active-salon-id", fallbackId);
+          } catch {}
+        }
+      }
+    } catch (err) {
+      console.warn("Error loading salons list:", err);
+    }
+  }, [userRole, userProfile?.salonId, userProfile?.assignedSalons, userEmail, currentSalonId]);
+
+  const loadSettings = useCallback(async () => {
+    try {
+      const s = await fetchSettings(currentSalonId);
+      if (s) setSettings(s);
+    } catch (err) {
+      console.warn("Failed to load settings in DashboardShell:", err);
+    }
+  }, [currentSalonId]);
+
+  useEffect(() => {
+    loadSalons();
+  }, [loadSalons, refreshTick]);
+
+  useEffect(() => {
+    loadSettings();
+  }, [loadSettings, refreshTick, currentSalonId]);
+
+  // Clear header action when switching tabs
+  useEffect(() => {
+    setHeaderAction(null);
+    setSalonDropdownOpen(false);
+  }, [page]);
+
+  const currentSalon = useMemo(() => {
+    const found = salons.find(s => s.id === currentSalonId);
+    if (found) return found;
+    return salons[0] || {
+      id: currentSalonId || "default",
+      name: settings?.shop_name || "NICE LOOKING",
+      subtitle: settings?.shop_subtitle || "Hair Wig & Hair Services",
+      invoice_prefix: settings?.invoice_prefix || "NL",
+      mobile: settings?.shop_mobile || "+91 98765 43210",
+      email: settings?.email || "sameershaikh121@proton.me",
+      address: settings?.shop_address || "",
+      whatsapp_number: settings?.whatsapp_number || "919876543210"
+    };
+  }, [salons, currentSalonId, settings]);
+
+  function switchSalon(id) {
+    setCurrentSalonId(id);
+    try {
+      localStorage.setItem("nice-looking-active-salon-id", id);
+    } catch {}
+    setSalonDropdownOpen(false);
+    triggerGlobalRefresh();
+  }
 
   const actorInfo = useMemo(() => ({
     id: session?.user?.id || "demo-user",
     email: userEmail,
     name: userName,
-    role: userRole
-  }), [session?.user?.id, userEmail, userName, userRole]);
+    role: userRole,
+    salonId: currentSalonId
+  }), [session?.user?.id, userEmail, userName, userRole, currentSalonId]);
 
   const nav = useMemo(() => {
+    if (isSuperAdmin || isOwner) {
+      return [
+        ["dashboard", "Dashboard", LayoutDashboard],
+        ["customers", "Customers", Users],
+        ["billing", "New Billing", IndianRupee],
+        ["invoices", "Invoices", FileText],
+        ["products", "Wig Products", Package],
+        ["offers", "Offers & WhatsApp", Percent],
+        ["reports", "Reports", BarChart3],
+        ["salons", "Salons & Branches", Building2],
+        ["audit", "Audit Logs", History],
+        ["staff", "Staff Management", UserCheck],
+        ["settings", "Settings", Settings]
+      ];
+    }
     if (isAdmin) {
       return [
         ["dashboard", "Dashboard", LayoutDashboard],
@@ -965,8 +1128,7 @@ function DashboardShell({ session, userProfile, onLogout }) {
         ["products", "Wig Products", Package],
         ["offers", "Offers & WhatsApp", Percent],
         ["reports", "Reports", BarChart3],
-        ["audit", "Audit Logs", History],
-        ["staff", "Staff Management", UserCheck],
+        ["salons", "Salons & Branches", Building2],
         ["settings", "Settings", Settings]
       ];
     }
@@ -977,9 +1139,10 @@ function DashboardShell({ session, userProfile, onLogout }) {
       ["invoices", "Invoices", FileText],
       ["products", "Wig Products", Package],
       ["offers", "Offers & WhatsApp", Percent],
+      ["salons", "Salons & Branches", Building2],
       ["settings", "Settings", Settings]
     ];
-  }, [isAdmin]);
+  }, [isSuperAdmin, isOwner, isAdmin]);
 
   return (
     <div className="app-shell">
@@ -1010,8 +1173,8 @@ function DashboardShell({ session, userProfile, onLogout }) {
                   <Scissors size={19} />
                 </div>
                 <div className="brand-text">
-                  <strong>{settings?.shop_name || "NICE LOOKING"}</strong>
-                  <span>{settings?.shop_subtitle || "Hair Wig & Services"}</span>
+                  <strong>{currentSalon?.name || settings?.shop_name || "NICE LOOKING"}</strong>
+                  <span>{currentSalon?.subtitle || settings?.shop_subtitle || "Hair Wig & Services"}</span>
                 </div>
               </div>
               <button
@@ -1066,11 +1229,11 @@ function DashboardShell({ session, userProfile, onLogout }) {
                     padding: "2px 6px",
                     borderRadius: "10px",
                     fontWeight: 700,
-                    background: isAdmin ? "#eff6ff" : "#f1f5f9",
-                    color: isAdmin ? "#1d4ed8" : "#475569"
+                    background: isSuperAdmin ? "#fef3c7" : isOwner ? "#fae8ff" : isAdmin ? "#eff6ff" : "#f1f5f9",
+                    color: isSuperAdmin ? "#b45309" : isOwner ? "#86198f" : isAdmin ? "#1d4ed8" : "#475569"
                   }}
                 >
-                  {isAdmin ? "🛡️ ADMIN" : "👤 STAFF"}
+                  {isSuperAdmin ? "👑 SUPER ADMIN" : isOwner ? "⭐ OWNER" : isAdmin ? "🛡️ ADMIN" : "👤 STAFF"}
                 </span>
               </div>
               <span style={{ fontSize: "11px", color: "#64748b", overflow: "hidden", textOverflow: "ellipsis", display: "block" }}>
@@ -1092,9 +1255,9 @@ function DashboardShell({ session, userProfile, onLogout }) {
       </aside>
 
       <main className={`main ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
-        {/* Top App Bar */}
+        {/* Top App Bar with Multi-Salon Switcher */}
         <header className="topbar">
-          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          <div className="topbar-left">
             <button
               className="icon-btn mobile-menu"
               type="button"
@@ -1104,23 +1267,84 @@ function DashboardShell({ session, userProfile, onLogout }) {
               <Menu size={18} />
             </button>
 
-            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            {/* Interactive Salon Switcher Dropdown */}
+            <div className="salon-switcher-wrap">
+              <button
+                type="button"
+                className="salon-switcher-btn"
+                onClick={() => setSalonDropdownOpen(o => !o)}
+                title="Switch Salon Branch"
+              >
+                <Building2 size={15} className="salon-btn-icon" />
+                <div className="salon-btn-text">
+                  <strong className="salon-btn-name">{currentSalon?.name || "NICE LOOKING"}</strong>
+                  <span className="salon-code-tag">{currentSalon?.invoice_prefix || "NL"}</span>
+                </div>
+                {(isSuperAdmin || isOwner || salons.length > 1) && (
+                  <ChevronDown size={13} className="salon-btn-chevron" />
+                )}
+              </button>
+
+              {salonDropdownOpen && (
+                <>
+                  <div
+                    className="dropdown-backdrop-transparent"
+                    onClick={() => setSalonDropdownOpen(false)}
+                  />
+                  <div className="salon-dropdown-menu">
+                    <div className="salon-dropdown-head">
+                      <span>🏢 Select Active Branch</span>
+                      <span className="salon-count-badge">{salons.length} Salons</span>
+                    </div>
+                    <div className="salon-dropdown-list">
+                      {salons.map(s => {
+                        const isSelected = s.id === currentSalonId;
+                        return (
+                          <button
+                            key={s.id}
+                            type="button"
+                            className={`salon-dropdown-item ${isSelected ? "selected" : ""}`}
+                            onClick={() => {
+                              switchSalon(s.id);
+                              setSalonDropdownOpen(false);
+                            }}
+                          >
+                            <div className="salon-item-prefix">{s.invoice_prefix || "NL"}</div>
+                            <div className="salon-item-details">
+                              <strong>{s.name}</strong>
+                              <span>{s.address || s.subtitle || "Branch"}</span>
+                            </div>
+                            {isSelected && <CheckCircle size={15} className="salon-selected-check" />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="salon-dropdown-foot">
+                      <button
+                        type="button"
+                        className="link-btn"
+                        style={{ fontSize: "12px", width: "100%", justifyContent: "center" }}
+                        onClick={() => {
+                          setPage("salons");
+                          setSalonDropdownOpen(false);
+                        }}
+                      >
+                        🏢 View Salons & Branches →
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="topbar-page-info">
               <span className="top-title">
                 {nav.find(n => n[0] === page)?.[1] || "Dashboard"}
               </span>
               <span
-                className="role-pill-mini"
-                style={{
-                  fontSize: "10px",
-                  padding: "3px 8px",
-                  borderRadius: "12px",
-                  fontWeight: 700,
-                  background: isAdmin ? "#eff6ff" : "#f8fafc",
-                  color: isAdmin ? "#1d4ed8" : "#475569",
-                  border: isAdmin ? "1px solid #bfdbfe" : "1px solid #e2e8f0"
-                }}
+                className={`role-pill-mini role-pill-${userRole || "staff"}`}
               >
-                {isAdmin ? "🛡️ OWNER / ADMIN" : "👤 RECEPTION"}
+                {isSuperAdmin ? "👑 SUPER ADMIN" : isOwner ? "⭐ SALON OWNER" : isAdmin ? "🛡️ ADMIN" : "👤 RECEPTION"}
               </span>
             </div>
           </div>
@@ -1128,18 +1352,18 @@ function DashboardShell({ session, userProfile, onLogout }) {
           <div className="top-actions">
             {headerAction}
             <button
-              className="icon-btn"
+              className="icon-btn header-refresh-btn"
               title="Refresh Data"
               type="button"
               onClick={triggerGlobalRefresh}
             >
-              <RefreshCw size={17} />
+              <RefreshCw size={16} />
             </button>
             <div className="avatar" title={`${userName} (${userRole})`}>{userInitials}</div>
           </div>
         </header>
 
-        {/* Dynamic Page Content with Route Guarding */}
+        {/* Dynamic Page Content with Multi-Salon Scope & Route Guarding */}
         <div className="content">
           {page === "dashboard" && (
             <Dashboard
@@ -1150,6 +1374,8 @@ function DashboardShell({ session, userProfile, onLogout }) {
               isAdmin={isAdmin}
               userRole={userRole}
               actorInfo={actorInfo}
+              salonId={currentSalonId}
+              currentSalon={currentSalon}
             />
           )}
           {page === "customers" && (
@@ -1162,6 +1388,8 @@ function DashboardShell({ session, userProfile, onLogout }) {
               userRole={userRole}
               actorInfo={actorInfo}
               settings={settings}
+              salonId={currentSalonId}
+              currentSalon={currentSalon}
             />
           )}
           {page === "billing" && (
@@ -1172,6 +1400,8 @@ function DashboardShell({ session, userProfile, onLogout }) {
               userRole={userRole}
               actorInfo={actorInfo}
               settings={settings}
+              salonId={currentSalonId}
+              currentSalon={currentSalon}
             />
           )}
           {page === "invoices" && (
@@ -1183,6 +1413,8 @@ function DashboardShell({ session, userProfile, onLogout }) {
               userRole={userRole}
               actorInfo={actorInfo}
               settings={settings}
+              salonId={currentSalonId}
+              currentSalon={currentSalon}
             />
           )}
           {page === "products" && (
@@ -1193,31 +1425,74 @@ function DashboardShell({ session, userProfile, onLogout }) {
               isAdmin={isAdmin}
               userRole={userRole}
               actorInfo={actorInfo}
+              salonId={currentSalonId}
+              currentSalon={currentSalon}
             />
           )}
           {page === "offers" && (
-            <Offers refreshTick={refreshTick} isAdmin={isAdmin} settings={settings} />
+            <Offers
+              refreshTick={refreshTick}
+              isAdmin={isAdmin}
+              settings={settings}
+              salonId={currentSalonId}
+              currentSalon={currentSalon}
+            />
           )}
           {page === "whatsapp" && (
-            <WhatsAppPage refreshTick={refreshTick} setHeaderAction={setHeaderAction} settings={settings} />
+            <WhatsAppPage
+              refreshTick={refreshTick}
+              setHeaderAction={setHeaderAction}
+              settings={settings}
+              salonId={currentSalonId}
+              currentSalon={currentSalon}
+            />
           )}
           {page === "reports" && (
             isAdmin ? (
-              <Reports refreshTick={refreshTick} setHeaderAction={setHeaderAction} />
+              <Reports
+                refreshTick={refreshTick}
+                setHeaderAction={setHeaderAction}
+                salonId={currentSalonId}
+                currentSalon={currentSalon}
+                actorInfo={actorInfo}
+              />
             ) : (
               <AccessRestricted userRole={userRole} setPage={setPage} />
             )
           )}
+          {page === "salons" && (
+            <SalonManagement
+              salons={salons}
+              currentSalon={currentSalon}
+              onSwitchSalon={switchSalon}
+              onDataChanged={() => {
+                loadSalons();
+                triggerGlobalRefresh();
+              }}
+              actorInfo={actorInfo}
+            />
+          )}
           {page === "audit" && (
             isAdmin ? (
-              <AuditLogs refreshTick={refreshTick} setHeaderAction={setHeaderAction} />
+              <AuditLogs
+                refreshTick={refreshTick}
+                setHeaderAction={setHeaderAction}
+                currentSalon={currentSalon}
+                availableSalons={salons}
+              />
             ) : (
               <AccessRestricted userRole={userRole} setPage={setPage} />
             )
           )}
           {page === "staff" && (
             isAdmin ? (
-              <StaffManagement refreshTick={refreshTick} onDataChanged={triggerGlobalRefresh} actorInfo={actorInfo} />
+              <StaffManagement
+                refreshTick={refreshTick}
+                onDataChanged={triggerGlobalRefresh}
+                actorInfo={actorInfo}
+                currentSalon={currentSalon}
+                availableSalons={salons}
+              />
             ) : (
               <AccessRestricted userRole={userRole} setPage={setPage} />
             )
@@ -1226,13 +1501,17 @@ function DashboardShell({ session, userProfile, onLogout }) {
             <SettingsPage
               actorInfo={actorInfo}
               isAdmin={isAdmin}
+              currentSalon={currentSalon}
+              salonId={currentSalonId}
               onSettingsSaved={() => {
                 loadSettings();
+                loadSalons();
                 triggerGlobalRefresh();
               }}
             />
           )}
         </div>
+
 
         {/* Mobile Native Bottom Navigation Bar */}
         <nav className="bottom-nav">
@@ -1447,7 +1726,7 @@ function Kpi({ icon: Icon, label, value, note }) {
 // =====================================================================
 // 1. Dashboard Component
 // =====================================================================
-function Dashboard({ setPage, refreshTick, setHeaderAction }) {
+function Dashboard({ setPage, refreshTick, onDataChanged, setHeaderAction, isAdmin, userRole, actorInfo, salonId, currentSalon }) {
   const [invoices, setInvoices] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1457,10 +1736,10 @@ function Dashboard({ setPage, refreshTick, setHeaderAction }) {
     let active = true;
     setLoading(true);
 
-    Promise.all([fetchInvoices(), fetchCustomers()])
+    Promise.all([fetchInvoices(salonId), fetchCustomers(salonId)])
       .then(([invs, custs]) => {
         if (!active) return;
-        setInvoices(invs);
+        setInvoices(invs || []);
         setCustomers(custs || []);
         setLoading(false);
       })
@@ -1472,7 +1751,7 @@ function Dashboard({ setPage, refreshTick, setHeaderAction }) {
     return () => {
       active = false;
     };
-  }, [refreshTick]);
+  }, [refreshTick, salonId]);
 
   const today = getMumbaiTodayISO();
   const activeDate = selectedDate || today;
@@ -1483,13 +1762,13 @@ function Dashboard({ setPage, refreshTick, setHeaderAction }) {
     r => r.createdAt === activeDate && !r.isVoided && r.status !== "VOIDED"
   );
 
-  const sales = activeInvoices.reduce((s, r) => s + Number(r.amount || 0), 0);
+  const sales = activeInvoices.reduce((s, r) => s + Number(r.amount || r.total || 0), 0);
   const cash = activeInvoices
     .filter(r => r.paymentMode === "Cash")
-    .reduce((s, r) => s + Number(r.amount || 0), 0);
+    .reduce((s, r) => s + Number(r.amount || r.total || 0), 0);
   const digital = activeInvoices
     .filter(r => ["UPI", "Card", "Netbanking", "Online"].includes(r.paymentMode))
-    .reduce((s, r) => s + Number(r.amount || 0), 0);
+    .reduce((s, r) => s + Number(r.amount || r.total || 0), 0);
 
   // Compute dynamic KPI labels and notes based on active date
   const kpiLabels = useMemo(() => {
@@ -1544,7 +1823,7 @@ function Dashboard({ setPage, refreshTick, setHeaderAction }) {
       });
       const amount = invoices
         .filter(r => r.createdAt === key && !r.isVoided && r.status !== "VOIDED")
-        .reduce((sum, r) => sum + Number(r.amount || 0), 0);
+        .reduce((sum, r) => sum + Number(r.amount || r.total || 0), 0);
       return { key, label, dayNum, amount };
     });
   }, [invoices]);
@@ -1560,28 +1839,16 @@ function Dashboard({ setPage, refreshTick, setHeaderAction }) {
   useEffect(() => {
     if (setHeaderAction) {
       setHeaderAction(
-        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-          {!isToday && (
-            <button
-              className="btn secondary small-btn"
-              type="button"
-              onClick={() => setSelectedDate(today)}
-              title="Reset KPI cards to today"
-            >
-              <RefreshCw size={13} /> Today
-            </button>
-          )}
-          <button
-            className="btn primary small-btn"
-            type="button"
-            onClick={() => setPage("billing")}
-          >
-            <Plus size={15} /> New Billing
-          </button>
-        </div>
+        <button
+          className="btn primary small-btn header-new-bill-btn"
+          type="button"
+          onClick={() => setPage("billing")}
+        >
+          <Plus size={15} /> <span className="btn-label-text">New Billing</span>
+        </button>
       );
     }
-  }, [isToday, today, setPage, setHeaderAction]);
+  }, [setPage, setHeaderAction]);
 
   return (
     <>
@@ -1664,8 +1931,8 @@ function Dashboard({ setPage, refreshTick, setHeaderAction }) {
                   <div
                     className={`bar-col ${isSelected ? "selected" : ""}`}
                     key={day.key}
-                    onClick={() => setSelectedDate(day.key)}
-                    title={`${day.key} (${day.label}): ${money(day.amount)} — Click to inspect date`}
+                    onClick={() => setSelectedDate(isSelected ? null : day.key)}
+                    title={`${day.key} (${day.label}): ${money(day.amount)} — Click to toggle inspection`}
                   >
                     <div className="bar-pill-badge">
                       {compactMoney(day.amount)}
@@ -1780,7 +2047,7 @@ function Dashboard({ setPage, refreshTick, setHeaderAction }) {
                     </td>
                     <td>{r.service}</td>
                     <td>
-                      <strong>{money(r.amount)}</strong>
+                      <strong>{money(r.amount || r.total)}</strong>
                     </td>
                     <td>
                       <PaymentModeBadge mode={r.paymentMode} />
@@ -1810,7 +2077,7 @@ function Dashboard({ setPage, refreshTick, setHeaderAction }) {
                     <span className="mobile-card-sub">{r.mobile}</span>
                   </div>
                   <div>
-                    <div className="mobile-card-amount">{money(r.amount)}</div>
+                    <div className="mobile-card-amount">{money(r.amount || r.total)}</div>
                     <div className="mobile-card-date">{r.createdAt}</div>
                   </div>
                 </div>
@@ -1834,7 +2101,7 @@ function Dashboard({ setPage, refreshTick, setHeaderAction }) {
 // =====================================================================
 // 2. Customers Component (Dynamic Last Visit Computation)
 // =====================================================================
-function Customers({ setPage, refreshTick, onDataChanged, setHeaderAction, isAdmin, userRole, actorInfo, settings }) {
+function Customers({ setPage, refreshTick, onDataChanged, setHeaderAction, isAdmin, userRole, actorInfo, settings, salonId, currentSalon }) {
   const [customers, setCustomers] = useState([]);
   const [search, setSearch] = useState("");
   const [viewingCustomer, setViewingCustomer] = useState(null);
@@ -1842,16 +2109,17 @@ function Customers({ setPage, refreshTick, onDataChanged, setHeaderAction, isAdm
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const currentShopName = currentSalon?.name || settings?.shop_name || "NICE LOOKING";
 
   useEffect(() => {
     if (setHeaderAction) {
       setHeaderAction(
         <button
-          className="btn primary small-btn"
+          className="btn primary small-btn header-new-bill-btn"
           type="button"
           onClick={() => setPage("billing")}
         >
-          <Plus size={15} /> Add via Billing
+          <Plus size={15} /> <span className="btn-label-text">Add via Billing</span>
         </button>
       );
     }
@@ -1859,16 +2127,16 @@ function Customers({ setPage, refreshTick, onDataChanged, setHeaderAction, isAdm
 
   const loadData = useCallback(() => {
     setLoading(true);
-    fetchCustomers()
+    fetchCustomers(salonId)
       .then(data => {
-        setCustomers(data);
+        setCustomers(data || []);
         setLoading(false);
       })
       .catch(err => {
         console.error("Customers load failed:", err);
         setLoading(false);
       });
-  }, []);
+  }, [salonId]);
 
   useEffect(() => {
     loadData();
@@ -1889,7 +2157,7 @@ function Customers({ setPage, refreshTick, onDataChanged, setHeaderAction, isAdm
     if (!editing) return;
     setSaving(true);
     try {
-      await saveCustomer(editing, actorInfo);
+      await saveCustomer(editing, actorInfo, salonId);
       setEditing(null);
       loadData();
       if (onDataChanged) onDataChanged();
@@ -1906,7 +2174,7 @@ function Customers({ setPage, refreshTick, onDataChanged, setHeaderAction, isAdm
     if (!confirmDelete) return;
     setSaving(true);
     try {
-      await deleteCustomer(confirmDelete.id, actorInfo);
+      await deleteCustomer(confirmDelete.id, actorInfo, salonId);
       setConfirmDelete(null);
       await loadData();
       if (onDataChanged) onDataChanged();
@@ -1994,10 +2262,7 @@ function Customers({ setPage, refreshTick, onDataChanged, setHeaderAction, isAdm
                           title="Send WhatsApp Message"
                           onClick={() =>
                             openWhatsApp(
-                              offerMessage(
-                                "Special greeting from NICE LOOKING Hair Wig & Salon! Let us know if you need any service or maintenance.",
-                                r.name
-                              ),
+                              `Special greeting from ${currentShopName} Hair Wig & Salon! Let us know if you need any service or maintenance.`,
                               r.mobile
                             )
                           }
@@ -2087,10 +2352,7 @@ function Customers({ setPage, refreshTick, onDataChanged, setHeaderAction, isAdm
                     type="button"
                     onClick={() =>
                       openWhatsApp(
-                        offerMessage(
-                          "Special greeting from NICE LOOKING Hair Wig & Salon! Let us know if you need any service or maintenance.",
-                          r.name
-                        ),
+                        `Special greeting from ${currentShopName} Hair Wig & Salon! Let us know if you need any service or maintenance.`,
                         r.mobile
                       )
                     }
@@ -2129,6 +2391,7 @@ function Customers({ setPage, refreshTick, onDataChanged, setHeaderAction, isAdm
       {viewingCustomer && (
         <Modal
           title="Customer Profile"
+          maxWidth="720px"
           onClose={() => setViewingCustomer(null)}
         >
           <div className="customer-profile-card">
@@ -2142,7 +2405,7 @@ function Customers({ setPage, refreshTick, onDataChanged, setHeaderAction, isAdm
                   📱 <a href={`tel:${viewingCustomer.mobile}`} style={{ color: "inherit", textDecoration: "underline", fontWeight: 700 }}>{viewingCustomer.mobile}</a>
                   {viewingCustomer.address ? ` • 📍 ${viewingCustomer.address}` : ""}
                 </p>
-                <div style={{ marginTop: "6px", display: "flex", gap: "6px", alignItems: "center" }}>
+                <div style={{ marginTop: "6px", display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
                   <span className="pill success" style={{ fontSize: "10px" }}>
                     ✓ {viewingCustomer.whatsapp_opt_in !== false ? "WhatsApp Active" : "No WhatsApp"}
                   </span>
@@ -2180,8 +2443,8 @@ function Customers({ setPage, refreshTick, onDataChanged, setHeaderAction, isAdm
               </h4>
 
               {viewingCustomer.invoices && viewingCustomer.invoices.length > 0 ? (
-                <div className="table-wrap" style={{ maxHeight: "230px", overflowY: "auto", border: "1px solid var(--border)", borderRadius: "10px" }}>
-                  <table>
+                <div className="table-wrap" style={{ maxHeight: "250px", overflowY: "auto", overflowX: "auto", border: "1px solid var(--border)", borderRadius: "10px", width: "100%" }}>
+                  <table style={{ width: "100%", minWidth: "520px" }}>
                     <thead>
                       <tr>
                         <th>Invoice</th>
@@ -2226,7 +2489,7 @@ function Customers({ setPage, refreshTick, onDataChanged, setHeaderAction, isAdm
                                     ...inv,
                                     customerName: viewingCustomer.name,
                                     mobile: viewingCustomer.mobile
-                                  }, settings),
+                                  }, currentSalon || settings),
                                   viewingCustomer.mobile
                                 )
                               }
@@ -2246,7 +2509,21 @@ function Customers({ setPage, refreshTick, onDataChanged, setHeaderAction, isAdm
               )}
             </div>
 
-            <div className="form-actions" style={{ marginTop: "8px" }}>
+            {/* Action Buttons Footer */}
+            <div
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: "10px",
+                marginTop: "14px",
+                paddingTop: "14px",
+                borderTop: "1px solid #e2e8f0",
+                width: "100%",
+                boxSizing: "border-box"
+              }}
+            >
               <button
                 className="btn secondary"
                 type="button"
@@ -2254,43 +2531,45 @@ function Customers({ setPage, refreshTick, onDataChanged, setHeaderAction, isAdm
               >
                 Close
               </button>
-              <button
-                className="btn whatsapp"
-                type="button"
-                onClick={() =>
-                  openWhatsApp(
-                    offerMessage(
-                      "Special greeting from NICE LOOKING Hair Wig & Salon! Let us know if you need any service or maintenance.",
-                      viewingCustomer.name
-                    ),
-                    viewingCustomer.mobile
-                  )
-                }
-              >
-                <Send size={15} /> Chat on WhatsApp
-              </button>
-              <button
-                className="btn primary"
-                type="button"
-                onClick={() => {
-                  const custToEdit = viewingCustomer;
-                  setViewingCustomer(null);
-                  setEditing({ ...custToEdit });
-                }}
-              >
-                <Pencil size={15} /> Edit Customer
-              </button>
-              <button
-                className="btn danger"
-                type="button"
-                onClick={() => {
-                  const custToDel = viewingCustomer;
-                  setViewingCustomer(null);
-                  setConfirmDelete(custToDel);
-                }}
-              >
-                <Trash2 size={15} /> Delete Customer
-              </button>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center" }}>
+                <button
+                  className="btn whatsapp"
+                  type="button"
+                  style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}
+                  onClick={() =>
+                    openWhatsApp(
+                      `Special greeting from ${currentShopName} Hair Wig & Salon! Let us know if you need any service or maintenance.`,
+                      viewingCustomer.mobile
+                    )
+                  }
+                >
+                  <Send size={15} /> Chat on WhatsApp
+                </button>
+                <button
+                  className="btn primary"
+                  type="button"
+                  style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}
+                  onClick={() => {
+                    const custToEdit = viewingCustomer;
+                    setViewingCustomer(null);
+                    setEditing({ ...custToEdit });
+                  }}
+                >
+                  <Pencil size={15} /> Edit Customer
+                </button>
+                <button
+                  className="btn danger"
+                  type="button"
+                  style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}
+                  onClick={() => {
+                    const custToDel = viewingCustomer;
+                    setViewingCustomer(null);
+                    setConfirmDelete(custToDel);
+                  }}
+                >
+                  <Trash2 size={15} /> Delete Customer
+                </button>
+              </div>
             </div>
           </div>
         </Modal>
@@ -2393,7 +2672,7 @@ function Customers({ setPage, refreshTick, onDataChanged, setHeaderAction, isAdm
 // =====================================================================
 // 3. New Billing Component (Multi-Service / Multi-Item & Atomic Stock)
 // =====================================================================
-function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, settings }) {
+function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, settings, salonId, currentSalon }) {
   const [products, setProducts] = useState([]);
   const [form, setForm] = useState({
     name: "",
@@ -2423,23 +2702,23 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
   const [done, setDone] = useState(null);
   const [submitting, setSubmitting] = useState(false);
 
-  // Load wig products
+  // Load wig products scoped to salonId
   useEffect(() => {
     let active = true;
-    fetchProducts()
+    fetchProducts(salonId)
       .then(prods => {
         if (!active) return;
-        setProducts(prods);
+        setProducts(prods || []);
       })
       .catch(err => console.error("Billing product load failed:", err));
     return () => {
       active = false;
     };
-  }, [refreshTick]);
+  }, [refreshTick, salonId]);
 
   const update = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
-  // Debounced customer lookup by mobile
+  // Debounced customer lookup by mobile scoped to salonId
   useEffect(() => {
     let cancelled = false;
     const clean = form.mobile.replace(/\D/g, "");
@@ -2450,7 +2729,7 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
 
     const timer = setTimeout(async () => {
       try {
-        const found = await findCustomerByMobile(clean);
+        const found = await findCustomerByMobile(clean, salonId);
         if (cancelled) return;
         if (found) {
           setExistingCustomer(found);
@@ -2471,7 +2750,7 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [form.mobile]);
+  }, [form.mobile, salonId]);
 
   // Line Items Handlers
   function addLineItem(serviceName = "Hair Wig") {
@@ -2669,9 +2948,21 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
 
     setSubmitting(true);
     try {
-      const created = await createInvoice(form, form.items, actorInfo);
+      const activePrefix = currentSalon?.invoice_prefix || settings?.invoice_prefix || "NL";
+      const invoicePayload = {
+        ...form,
+        subtotal,
+        discount,
+        total,
+        amount: total,
+        invoicePrefix: activePrefix
+      };
+      const created = await createInvoice(invoicePayload, form.items, actorInfo, salonId);
       setDone({
         ...created,
+        total: created.total || total,
+        amount: created.amount || total,
+        subtotal: created.subtotal || subtotal,
         sendWhatsApp: form.whatsapp
       });
 
@@ -2702,8 +2993,8 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
       });
       setExistingCustomer(null);
 
-      // Refresh product list and global data
-      fetchProducts().then(setProducts);
+      // Refresh product list and global data scoped to salonId
+      fetchProducts(salonId).then(setProducts);
       if (onDataChanged) onDataChanged();
     } catch (err) {
       console.error("Billing submit error:", err);
@@ -3089,22 +3380,22 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
         {/* Live Invoice Preview Box */}
         <aside className="panel invoice-preview">
           <div className="invoice-logo">
-            <Scissors size={18} /> {settings?.shop_name || "NICE LOOKING"}
+            <Scissors size={18} /> {currentSalon?.name || settings?.shop_name || "NICE LOOKING"}
           </div>
-          {settings?.shop_subtitle && (
+          {(currentSalon?.subtitle || settings?.shop_subtitle) && (
             <div style={{ fontSize: "12px", color: "#64748b", marginTop: "-4px", marginBottom: "8px", fontWeight: 500 }}>
-              {settings.shop_subtitle}
+              {currentSalon?.subtitle || settings?.shop_subtitle}
             </div>
           )}
           <span className="eyebrow">INVOICE PREVIEW</span>
           <h3>{form.name || "Customer Name"}</h3>
           <p>{form.mobile || "10-digit mobile"}</p>
-          {(settings?.shop_address || settings?.shop_mobile || settings?.whatsapp_number) && (
+          {(currentSalon?.address || settings?.shop_address || currentSalon?.mobile || currentSalon?.whatsapp_number || settings?.shop_mobile || settings?.whatsapp_number) && (
             <div style={{ fontSize: "11px", color: "#64748b", marginBottom: "12px", lineHeight: "1.4" }}>
-              {(settings?.shop_mobile || settings?.whatsapp_number) && (
-                <div>📞 {settings.shop_mobile || settings.whatsapp_number}</div>
+              {(currentSalon?.mobile || currentSalon?.whatsapp_number || settings?.shop_mobile || settings?.whatsapp_number) && (
+                <div>📞 {currentSalon?.mobile || currentSalon?.whatsapp_number || settings?.shop_mobile || settings?.whatsapp_number}</div>
               )}
-              {settings?.shop_address && <div>📍 {settings.shop_address}</div>}
+              {(currentSalon?.address || settings?.shop_address) && <div>📍 {currentSalon?.address || settings?.shop_address}</div>}
             </div>
           )}
 
@@ -3181,9 +3472,10 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
             <button
               className="btn whatsapp full"
               type="button"
+              style={{ marginTop: "12px" }}
               onClick={() =>
                 openWhatsApp(
-                  invoiceMessage(done, settings),
+                  invoiceMessage(done, currentSalon || settings),
                   done.mobile
                 )
               }
@@ -3200,7 +3492,7 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
 // =====================================================================
 // 4. Invoices Component (Multi-field Search, View, Void Control, Edit & Audit)
 // =====================================================================
-function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRole, actorInfo, settings }) {
+function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRole, actorInfo, settings, salonId, currentSalon }) {
   const [invoices, setInvoices] = useState([]);
   const [products, setProducts] = useState([]);
   const [search, setSearch] = useState("");
@@ -3222,17 +3514,17 @@ function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
 
   const loadData = useCallback(() => {
     setLoading(true);
-    Promise.all([fetchInvoices(), fetchProducts()])
+    Promise.all([fetchInvoices(salonId), fetchProducts(salonId)])
       .then(([invs, prods]) => {
-        setInvoices(invs);
-        setProducts(prods);
+        setInvoices(invs || []);
+        setProducts(prods || []);
         setLoading(false);
       })
       .catch(err => {
         console.error("Invoices load failed:", err);
         setLoading(false);
       });
-  }, []);
+  }, [salonId]);
 
   useEffect(() => {
     loadData();
@@ -3368,7 +3660,7 @@ function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
 
     setSaving(true);
     try {
-      await updateInvoice(editing, selectedEditProduct, actorInfo);
+      await updateInvoice(editing, selectedEditProduct, actorInfo, salonId);
       setEditing(null);
       loadData();
       if (onDataChanged) onDataChanged();
@@ -3390,7 +3682,7 @@ function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
 
     setVoiding(true);
     try {
-      await voidInvoice(voidModalInvoice.id, voidReason.trim(), actorInfo);
+      await voidInvoice(voidModalInvoice.id, voidReason.trim(), actorInfo, salonId);
       setVoidModalInvoice(null);
       setVoidReason("");
       loadData();
@@ -3408,7 +3700,7 @@ function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
     if (!confirmDelete) return;
     setSaving(true);
     try {
-      await deleteInvoice(confirmDelete.id, actorInfo);
+      await deleteInvoice(confirmDelete.id, actorInfo, salonId);
       setConfirmDelete(null);
       loadData();
       if (onDataChanged) onDataChanged();
@@ -3677,7 +3969,7 @@ function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
                                   title="Send Itemized Invoice on WhatsApp"
                                   onClick={() =>
                                     openWhatsApp(
-                                      invoiceMessage(i, settings),
+                                      invoiceMessage(i, currentSalon || settings),
                                       i.mobile
                                     )
                                   }
@@ -3828,7 +4120,7 @@ function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
                             type="button"
                             onClick={() =>
                               openWhatsApp(
-                                invoiceMessage(i, settings),
+                                invoiceMessage(i, currentSalon || settings),
                                 i.mobile
                               )
                             }
@@ -3898,6 +4190,7 @@ function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
       {viewingInvoice && (
         <Modal
           title={`Invoice Details: ${viewingInvoice.invoiceNumber}`}
+          maxWidth="680px"
           onClose={() => setViewingInvoice(null)}
         >
           <div className="view-invoice-modal-content">
@@ -4059,6 +4352,16 @@ function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
               </div>
             </div>
 
+            {/* Print-Only Footer Notice */}
+            <div className="view-invoice-print-footer">
+              <p style={{ margin: 0, fontWeight: 700, color: "#334155", fontSize: "12px" }}>
+                Thank you for visiting {viewingInvoice.shopSettings?.shop_name || settings?.shop_name || "Nice Looking"}!
+              </p>
+              <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "#64748b" }}>
+                This is a computer-generated invoice and requires no signature.
+              </p>
+            </div>
+
             <div className="form-actions no-print">
               <button
                 className="btn secondary"
@@ -4081,7 +4384,7 @@ function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
                   type="button"
                   onClick={() =>
                     openWhatsApp(
-                      invoiceMessage(viewingInvoice, settings),
+                      invoiceMessage(viewingInvoice, currentSalon || settings),
                       viewingInvoice.mobile
                     )
                   }
@@ -4523,7 +4826,7 @@ function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
 // =====================================================================
 // 5. Wig Products Component (Supabase CRUD & Exact Sizes)
 // =====================================================================
-function Products({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRole, actorInfo }) {
+function Products({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRole, actorInfo, salonId, currentSalon }) {
   const [products, setProducts] = useState([]);
   const [modal, setModal] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -4542,18 +4845,19 @@ function Products({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
     description: ""
   };
 
-  const loadData = useCallback(() => {
+  const loadData = useCallback(async () => {
     setLoading(true);
-    fetchProducts()
-      .then(prods => {
-        setProducts(prods || []);
-        setLoading(false);
-      })
-      .catch(err => {
-        console.error("Products load failed:", err);
-        setLoading(false);
-      });
-  }, []);
+    try {
+      const prods = await fetchProducts(salonId);
+      setProducts(prods || []);
+      return prods || [];
+    } catch (err) {
+      console.error("Products load failed:", err);
+      return [];
+    } finally {
+      setLoading(false);
+    }
+  }, [salonId]);
 
   useEffect(() => {
     loadData();
@@ -4566,22 +4870,44 @@ function Products({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
   }
 
   function openEdit(product) {
-    setEditing({ ...product });
+    setEditing({
+      ...product,
+      name: product.name || product.product_name || "",
+      type: product.type || product.hair_type || "Human Hair",
+      color: product.color || "Natural Black",
+      size: product.size || "5x7"
+    });
     setIsEditing(true);
     setModal(true);
   }
 
   async function handleSaveProduct(e) {
     e.preventDefault();
-    if (!editing || !editing.name || !editing.name.trim()) {
+    if (!editing || !(editing.name || editing.product_name || "").trim()) {
       return alert("Wig Product Name is required.");
     }
     setSaving(true);
     try {
-      await saveProduct(editing, actorInfo);
+      const savedProd = await saveProduct(editing, actorInfo, salonId);
+      
+      // Optimistically update products state immediately so the row shows up instantly
+      if (savedProd) {
+        setProducts(prev => {
+          const list = Array.isArray(prev) ? [...prev] : [];
+          const idx = list.findIndex(p => String(p.id) === String(savedProd.id));
+          if (idx >= 0) {
+            list[idx] = savedProd;
+          } else {
+            list.unshift(savedProd);
+          }
+          return list;
+        });
+      }
+
       setModal(false);
       setEditing(null);
       setIsEditing(false);
+
       await loadData();
       if (onDataChanged) onDataChanged();
       alert(isEditing ? "Wig product updated successfully." : "New wig stock saved successfully.");
@@ -4596,9 +4922,14 @@ function Products({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
   async function handleDeleteProduct() {
     if (!confirmDelete) return;
     setSaving(true);
+    const deletedId = confirmDelete.id;
     try {
-      await deleteProduct(confirmDelete.id, actorInfo);
+      await deleteProduct(deletedId, actorInfo, salonId);
       setConfirmDelete(null);
+
+      // Optimistically remove from state immediately
+      setProducts(prev => (prev || []).filter(p => String(p.id) !== String(deletedId)));
+
       await loadData();
       if (onDataChanged) onDataChanged();
       alert("Wig product deleted successfully.");
@@ -4662,22 +4993,22 @@ function Products({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
                 products.map(p => (
                   <tr key={p.id}>
                     <td>
-                      <strong>{p.name}</strong>
+                      <strong>{p.name || p.product_name || "Wig Product"}</strong>
                     </td>
-                    <td>{p.type}</td>
-                    <td>{p.color}</td>
+                    <td>{p.type || p.hair_type || "Human Hair"}</td>
+                    <td>{p.color || "Natural Black"}</td>
                     <td>
-                      <span className="pill">{p.size || "—"}</span>
+                      <span className="pill">{p.size || "5x7"}</span>
                     </td>
                     <td>
                       <strong>{money(p.price)}</strong>
                     </td>
                     <td>
-                      <strong style={p.stock <= 2 ? { color: "#dc2626" } : {}}>{p.stock}</strong>
+                      <strong style={Number(p.stock || 0) <= 2 ? { color: "#dc2626" } : {}}>{p.stock ?? 0}</strong>
                     </td>
                     <td>
-                      <span className={`pill ${p.stock < 4 ? "warning" : ""}`}>
-                        {p.stock > 0 ? "Available" : "Out of stock"}
+                      <span className={`pill ${Number(p.stock || 0) < 4 ? "warning" : ""}`}>
+                        {Number(p.stock || 0) > 0 ? "Available" : "Out of stock"}
                       </span>
                     </td>
                     <td>
@@ -4718,21 +5049,21 @@ function Products({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
               <div className="mobile-card" key={p.id}>
                 <div className="mobile-card-header">
                   <div>
-                    <h4 className="mobile-card-title">{p.name}</h4>
-                    <span className="mobile-card-sub">{p.type} • {p.color}</span>
+                    <h4 className="mobile-card-title">{p.name || p.product_name || "Wig Product"}</h4>
+                    <span className="mobile-card-sub">{p.type || p.hair_type || "Human Hair"} • {p.color || "Natural Black"}</span>
                   </div>
                   <div>
                     <div className="mobile-card-amount">{money(p.price)}</div>
-                    <div className="mobile-card-date">Size: {p.size || "—"}</div>
+                    <div className="mobile-card-date">Size: {p.size || "5x7"}</div>
                   </div>
                 </div>
 
                 <div className="mobile-card-body">
                   <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
-                    <span>Stock: <strong>{p.stock} units</strong></span>
+                    <span>Stock: <strong>{p.stock ?? 0} units</strong></span>
                   </div>
-                  <span className={`pill ${p.stock < 4 ? "warning" : "success"}`}>
-                    {p.stock > 0 ? "In Stock" : "Out of stock"}
+                  <span className={`pill ${Number(p.stock || 0) < 4 ? "warning" : "success"}`}>
+                    {Number(p.stock || 0) > 0 ? "In Stock" : "Out of stock"}
                   </span>
                 </div>
 
@@ -4923,7 +5254,7 @@ function Products({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
 // =====================================================================
 // 6A. Offers & Promotional Campaigns Component
 // =====================================================================
-function Offers({ refreshTick, isAdmin = true, settings }) {
+function Offers({ refreshTick, isAdmin = true, settings, salonId, currentSalon }) {
   const [customers, setCustomers] = useState([]);
   const [offer, setOffer] = useState({
     title: "Hair Wig Special Festive Offer",
@@ -4935,11 +5266,11 @@ function Offers({ refreshTick, isAdmin = true, settings }) {
 
   useEffect(() => {
     let active = true;
-    fetchCustomers()
+    fetchCustomers(salonId)
       .then(custs => {
         if (active) {
           // Filter opted-in customers with valid phone numbers
-          const optedIn = custs.filter(
+          const optedIn = (custs || []).filter(
             c => (c.whatsapp_opt_in ?? true) && normalizeWhatsAppNumber(c.mobile)
           );
           setCustomers(optedIn);
@@ -4949,7 +5280,7 @@ function Offers({ refreshTick, isAdmin = true, settings }) {
     return () => {
       active = false;
     };
-  }, [refreshTick]);
+  }, [refreshTick, salonId]);
 
   async function handleSendAll() {
     if (!customers.length) {
@@ -4964,7 +5295,8 @@ function Offers({ refreshTick, isAdmin = true, settings }) {
     }
 
     setSending(true);
-    const msg = offerMessage(offer, settings);
+    const activeSalon = currentSalon || settings;
+    const msg = offerMessage(offer, activeSalon);
 
     // Open WhatsApp link for first customer or show instructions
     if (customers.length === 1) {
@@ -4977,6 +5309,8 @@ function Offers({ refreshTick, isAdmin = true, settings }) {
     }
     setSending(false);
   }
+
+  const activeSalon = currentSalon || settings;
 
   return (
     <>
@@ -5046,7 +5380,7 @@ function Offers({ refreshTick, isAdmin = true, settings }) {
           <div className="preview-head">
             <Percent size={18} style={{ color: "#16a34a" }} /> WhatsApp Offer Preview
           </div>
-          <div className="wa-message">{offerMessage(offer)}</div>
+          <div className="wa-message">{offerMessage(offer, activeSalon)}</div>
         </section>
       </div>
     </>
@@ -5056,7 +5390,7 @@ function Offers({ refreshTick, isAdmin = true, settings }) {
 // =====================================================================
 // 6B. WhatsApp Direct Communicator & Template Hub Component
 // =====================================================================
-function WhatsAppPage({ refreshTick }) {
+function WhatsAppPage({ refreshTick, setHeaderAction, settings, salonId, currentSalon }) {
   const [customers, setCustomers] = useState([]);
   const [selectedCustomerId, setSelectedCustomerId] = useState("");
   const [recipientPhone, setRecipientPhone] = useState("");
@@ -5069,13 +5403,16 @@ function WhatsAppPage({ refreshTick }) {
   const [optInFilter, setOptInFilter] = useState("all");
   const [loading, setLoading] = useState(true);
 
+  const shopName = currentSalon?.name || settings?.shop_name || "NICE LOOKING";
+  const shopSubtitle = currentSalon?.subtitle || settings?.shop_subtitle || "Hair Wig & Hair Services";
+
   useEffect(() => {
     let active = true;
     setLoading(true);
-    fetchCustomers()
+    fetchCustomers(salonId)
       .then(custs => {
         if (active) {
-          setCustomers(custs);
+          setCustomers(custs || []);
           setLoading(false);
         }
       })
@@ -5086,7 +5423,7 @@ function WhatsAppPage({ refreshTick }) {
     return () => {
       active = false;
     };
-  }, [refreshTick]);
+  }, [refreshTick, salonId]);
 
   function handleSelectCustomer(cId) {
     setSelectedCustomerId(cId);
@@ -5108,12 +5445,12 @@ function WhatsAppPage({ refreshTick }) {
       return [
         `Hello ${name},`,
         "",
-        `This is a friendly reminder from NICE LOOKING for your upcoming *${serviceName}*${appointmentDate ? ` on ${appointmentDate}` : ""}.`,
+        `This is a friendly reminder from ${shopName} for your upcoming *${serviceName}*${appointmentDate ? ` on ${appointmentDate}` : ""}.`,
         "",
         "Please let us know if you need to reschedule or have any questions.",
         "",
         "Thank you,",
-        "NICE LOOKING – Hair Wig & Hair Services"
+        `${shopName}${shopSubtitle ? ` – ${shopSubtitle}` : ""}`
       ].join("\n");
     }
 
@@ -5121,14 +5458,14 @@ function WhatsAppPage({ refreshTick }) {
       return [
         `Hello ${name},`,
         "",
-        "Your Hair Wig regular maintenance & styling service is due at NICE LOOKING.",
+        `Your Hair Wig regular maintenance & styling service is due at ${shopName}.`,
         "",
         "Regular washing, conditioning, and color refreshment keeps your wig looking natural and vibrant.",
         "",
         "Visit our salon or reply here to book your slot.",
         "",
         "Best regards,",
-        "NICE LOOKING – Hair Wig & Hair Services"
+        `${shopName}${shopSubtitle ? ` – ${shopSubtitle}` : ""}`
       ].join("\n");
     }
 
@@ -5136,20 +5473,20 @@ function WhatsAppPage({ refreshTick }) {
       return [
         `Hello ${name},`,
         "",
-        "Thank you for choosing NICE LOOKING!",
+        `Thank you for choosing ${shopName}!`,
         "",
         "How was your recent experience with our hair wig services? Your feedback means the world to us.",
         "",
         "Warm regards,",
-        "NICE LOOKING Team"
+        `${shopName} Team`
       ].join("\n");
     }
 
     return (
       customText.trim() ||
-      `Hello ${name},\n\nGreetings from NICE LOOKING Hair Wig & Services!`
+      `Hello ${name},\n\nGreetings from ${shopName} Hair Wig & Services!`
     );
-  }, [recipientName, templateKey, serviceName, appointmentDate, customText]);
+  }, [recipientName, templateKey, serviceName, appointmentDate, customText, shopName, shopSubtitle]);
 
   function handleSendWhatsApp(phone, text) {
     const targetPhone = phone || recipientPhone;
@@ -5349,7 +5686,7 @@ function WhatsAppPage({ refreshTick }) {
                         className="btn whatsapp small-btn"
                         onClick={() => {
                           handleSelectCustomer(cust.id);
-                          openWhatsApp(`Hello ${cust.name},\n\nThank you for choosing NICE LOOKING Hair Wig & Services. How can we assist you today?`, cust.mobile);
+                          openWhatsApp(`Hello ${cust.name},\n\nThank you for choosing ${shopName} Hair Wig & Services. How can we assist you today?`, cust.mobile);
                         }}
                       >
                         <Send size={13} /> Chat
@@ -5375,7 +5712,7 @@ function WhatsAppPage({ refreshTick }) {
 // =====================================================================
 // 7. Reports Component
 // =====================================================================
-function Reports({ refreshTick, setHeaderAction }) {
+function Reports({ refreshTick, setHeaderAction, salonId, currentSalon, actorInfo }) {
   const [invoices, setInvoices] = useState([]);
   const [customerCount, setCustomerCount] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -5383,11 +5720,11 @@ function Reports({ refreshTick, setHeaderAction }) {
   useEffect(() => {
     let active = true;
     setLoading(true);
-    Promise.all([fetchInvoices(), fetchCustomers()])
+    Promise.all([fetchInvoices(salonId), fetchCustomers(salonId)])
       .then(([invs, custs]) => {
         if (!active) return;
-        setInvoices(invs);
-        setCustomerCount(custs.length);
+        setInvoices(invs || []);
+        setCustomerCount(custs ? custs.length : 0);
         setLoading(false);
       })
       .catch(err => {
@@ -5397,7 +5734,7 @@ function Reports({ refreshTick, setHeaderAction }) {
     return () => {
       active = false;
     };
-  }, [refreshTick]);
+  }, [refreshTick, salonId]);
 
   const activeInvoices = invoices.filter(r => !r.isVoided && r.status !== "VOIDED");
   const total = activeInvoices.reduce((s, r) => s + Number(r.amount || 0), 0);
@@ -5414,17 +5751,16 @@ function Reports({ refreshTick, setHeaderAction }) {
         <button
           className="btn secondary small-btn"
           type="button"
-          onClick={() => csvDownload(activeInvoices, "nice-looking-active-sales-report.csv")}
+          onClick={() => csvDownload(activeInvoices, `nice-looking-sales-report-${currentSalon?.code || "main"}.csv`)}
         >
           <Download size={14} /> Export CSV
         </button>
       );
     }
-  }, [activeInvoices, setHeaderAction]);
+  }, [activeInvoices, setHeaderAction, currentSalon]);
 
   return (
     <>
-
       <div className="kpi-grid">
         <Kpi
           icon={IndianRupee}
@@ -5458,6 +5794,13 @@ function Reports({ refreshTick, setHeaderAction }) {
             <h3>Sales Transactions</h3>
             <p>Exportable billing records ({activeInvoices.length} active bills)</p>
           </div>
+          <button
+            className="btn secondary small-btn"
+            type="button"
+            onClick={() => csvDownload(activeInvoices, `nice-looking-sales-report-${currentSalon?.code || "main"}.csv`)}
+          >
+            <Download size={14} /> Export CSV
+          </button>
         </div>
         <div className="table-wrap">
           <table>
@@ -5515,9 +5858,9 @@ function Reports({ refreshTick, setHeaderAction }) {
 }
 
 // =====================================================================
-// 8. Settings Component (Supabase Persistence)
+// 8. Settings Component (Supabase Persistence & Custom SMTP Guide)
 // =====================================================================
-function SettingsPage({ actorInfo, isAdmin = true, onSettingsSaved }) {
+function SettingsPage({ actorInfo, isAdmin = true, onSettingsSaved, salonId, currentSalon }) {
   const [form, setForm] = useState({
     shop_name: "NICE LOOKING",
     shop_subtitle: "Hair Wig & Hair Services",
@@ -5529,9 +5872,16 @@ function SettingsPage({ actorInfo, isAdmin = true, onSettingsSaved }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
+  const userRole = (actorInfo?.role || "").toLowerCase();
+  const isSuperAdmin = userRole === "superadmin" || userRole === "super_admin";
+  const isOwner = userRole === "owner";
+
   useEffect(() => {
-    fetchSettings()
+    let active = true;
+    setLoading(true);
+    fetchSettings(salonId)
       .then(data => {
+        if (!active) return;
         if (data) {
           setForm({
             shop_name: data.shop_name || "",
@@ -5546,15 +5896,23 @@ function SettingsPage({ actorInfo, isAdmin = true, onSettingsSaved }) {
       })
       .catch(err => {
         console.error("Settings load error:", err);
-        setLoading(false);
+        if (active) setLoading(false);
       });
-  }, []);
+    return () => {
+      active = false;
+    };
+  }, [salonId]);
 
   async function handleSaveSettings(e) {
     e.preventDefault();
+    const cleanPrefix = (form.invoice_prefix || "NL").trim().toUpperCase() || "NL";
     setSaving(true);
     try {
-      const saved = await saveSettings(form, actorInfo);
+      const payload = {
+        ...form,
+        invoice_prefix: cleanPrefix
+      };
+      const saved = await saveSettings(payload, actorInfo, salonId);
       if (saved) {
         setForm({
           shop_name: saved.shop_name || "",
@@ -5562,11 +5920,11 @@ function SettingsPage({ actorInfo, isAdmin = true, onSettingsSaved }) {
           shop_mobile: saved.shop_mobile || "",
           whatsapp_number: saved.whatsapp_number || "",
           shop_address: saved.shop_address || "",
-          invoice_prefix: saved.invoice_prefix || "NL"
+          invoice_prefix: saved.invoice_prefix || cleanPrefix
         });
       }
       if (onSettingsSaved) onSettingsSaved();
-      alert("Settings saved successfully.");
+      alert(`Settings for ${currentSalon?.name || "current branch"} saved successfully.`);
     } catch (err) {
       console.error(err);
       alert("Failed to save settings: " + err.message);
@@ -5577,21 +5935,66 @@ function SettingsPage({ actorInfo, isAdmin = true, onSettingsSaved }) {
 
   return (
     <>
-      <div className="grid-2">
+      <div style={{ maxWidth: "680px" }}>
+        {/* Salon Branch Details & Shop Settings */}
         <section className="panel form-panel">
-          <h3>Business Profile & Shop Settings</h3>
+          <div className="panel-head">
+            <div>
+              <h3>Business Profile & Shop Settings</h3>
+              <p>Branch: <strong>{currentSalon?.name || "Main Salon"}</strong> {currentSalon?.code ? `(${currentSalon.code})` : ""}</p>
+            </div>
+            {currentSalon && (
+              <span className="pill" style={{ background: "#eff6ff", color: "var(--blue)" }}>
+                🏢 {currentSalon.address || currentSalon.name || "Salon Branch"}
+              </span>
+            )}
+          </div>
           <form onSubmit={handleSaveSettings}>
+            {/* Row 1: Business / Branch Name (Super Admin ONLY) */}
             <label>
-              Business Name *
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
+                <span>Business / Branch Name *</span>
+                {!isSuperAdmin ? (
+                  <span
+                    style={{
+                      fontSize: "11px",
+                      color: "#b45309",
+                      fontWeight: 600,
+                      background: "#fef3c7",
+                      padding: "2px 8px",
+                      borderRadius: "12px",
+                      border: "1px solid #fde68a",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "4px"
+                    }}
+                  >
+                    🔒 Super Admin Only
+                  </span>
+                ) : (
+                  <span style={{ fontSize: "11px", color: "#166534", fontWeight: 600, background: "#dcfce7", padding: "2px 8px", borderRadius: "12px" }}>
+                    👑 Super Admin Access
+                  </span>
+                )}
+              </div>
               <input
                 required
+                disabled={!isSuperAdmin}
                 value={form.shop_name || ""}
                 onChange={e => setForm({ ...form, shop_name: e.target.value })}
                 placeholder="NICE LOOKING"
+                style={!isSuperAdmin ? { background: "#f8fafc", cursor: "not-allowed", color: "#64748b", borderColor: "#e2e8f0" } : {}}
               />
+              {!isSuperAdmin && (
+                <span style={{ fontSize: "11.5px", color: "#64748b", marginTop: "3px", display: "block" }}>
+                  Only Super Admin can change salon branch names. You can edit the subtitle, phone, address, and invoice prefix below.
+                </span>
+              )}
             </label>
+
+            {/* Row 2: Business Subtitle / Tagline (Salon Owner & Super Admin) */}
             <label>
-              Business Subtitle
+              Business Subtitle / Tagline
               <input
                 value={form.shop_subtitle || ""}
                 onChange={e =>
@@ -5600,8 +6003,10 @@ function SettingsPage({ actorInfo, isAdmin = true, onSettingsSaved }) {
                 placeholder="Hair Wig & Hair Services"
               />
             </label>
+
+            {/* Row 3: WhatsApp Business & Calling Number (Salon Owner & Super Admin) */}
             <label>
-              WhatsApp Business Number
+              WhatsApp Business & Calling Number
               <input
                 value={form.whatsapp_number || form.shop_mobile || ""}
                 onChange={e =>
@@ -5614,34 +6019,49 @@ function SettingsPage({ actorInfo, isAdmin = true, onSettingsSaved }) {
                 placeholder="e.g. 9000000000 or 919876543210"
               />
             </label>
+
+            {/* Row 4: Shop / Branch Address (Salon Owner & Super Admin) */}
             <label>
-              Shop Address
+              Shop / Branch Address
               <textarea
                 rows={3}
                 value={form.shop_address || ""}
                 onChange={e =>
                   setForm({ ...form, shop_address: e.target.value })
                 }
-                placeholder="Full salon / business address"
+                placeholder="Full salon branch address..."
               />
             </label>
+
+            {/* Row 5: Invoice Prefix (Salon Owner & Super Admin) */}
             <label>
-              Invoice Prefix
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
+                <span>Invoice Prefix (e.g. NL, NLA, NLS, PTS)</span>
+                <span style={{ fontSize: "11.5px", fontWeight: 700, color: "var(--blue)", background: "#eff6ff", padding: "2px 8px", borderRadius: "10px", border: "1px solid #bfdbfe" }}>
+                  {(form.invoice_prefix || "NL").toUpperCase()}-{new Date().getFullYear()}-XXXXXX
+                </span>
+              </div>
               <input
-                value={form.invoice_prefix || "NL"}
+                required
+                maxLength={6}
+                value={form.invoice_prefix ?? ""}
                 onChange={e =>
-                  setForm({ ...form, invoice_prefix: e.target.value.toUpperCase() })
+                  setForm({ ...form, invoice_prefix: e.target.value.toUpperCase().replace(/[^A-Z0-9_-]/g, "") })
                 }
-                placeholder="NL"
+                placeholder="e.g. NL, PTS, NLA"
               />
+              <span style={{ fontSize: "11.5px", color: "#64748b", marginTop: "3px", display: "block" }}>
+                New bill invoices for this branch will be generated as <strong>{(form.invoice_prefix || "NL").toUpperCase()}-{new Date().getFullYear()}-XXXXXX</strong> (e.g. {(form.invoice_prefix || "NL").toUpperCase()}-{new Date().getFullYear()}-000101).
+              </span>
             </label>
+
             <button
               className="btn primary"
               type="submit"
               disabled={saving || loading}
               style={{ marginTop: "14px" }}
             >
-              {saving ? "Saving..." : "Save Settings"}
+              {saving ? "Saving..." : `Save Settings for ${currentSalon?.name || "Salon"}`}
             </button>
           </form>
         </section>
@@ -5653,7 +6073,7 @@ function SettingsPage({ actorInfo, isAdmin = true, onSettingsSaved }) {
 // =====================================================================
 // Shared Modal Component (Responsive Native Bottom Sheet on Mobile)
 // =====================================================================
-function Modal({ title, children, onClose }) {
+function Modal({ title, children, onClose, maxWidth, style, className = "" }) {
   return (
     <div
       className="modal-backdrop"
@@ -5661,7 +6081,10 @@ function Modal({ title, children, onClose }) {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="modal">
+      <div
+        className={`modal ${className}`}
+        style={{ ...(maxWidth ? { maxWidth } : {}), ...(style || {}) }}
+      >
         <div className="sheet-handle"></div>
         <div className="modal-head">
           <h3>{title}</h3>

@@ -2,77 +2,67 @@ import { supabase, supabaseConfigured, createIsolatedClient, getMumbaiTodayISO, 
 import { demoCustomers, demoProducts } from "../data/demo.js";
 import { normalizeWhatsAppNumber } from "./whatsapp.js";
 
-const STORAGE_KEY = "nice-looking-mvp-data-v3";
-const SETTINGS_STORAGE_KEY = "nice-looking-settings";
-const AUDIT_LOGS_KEY = "nice-looking-audit-logs";
-const STAFF_PROFILES_KEY = "nice-looking-staff-profiles";
+const STORAGE_KEY = "nice-looking-mvp-multitenant-v5";
+const SALONS_STORAGE_KEY = "nice-looking-salons-v5";
+const SETTINGS_STORAGE_KEY = "nice-looking-settings-v5";
+const AUDIT_LOGS_KEY = "nice-looking-audit-logs-v5";
+const STAFF_PROFILES_KEY = "nice-looking-staff-profiles-v5";
+const LOCAL_CREDENTIALS_KEY = "nice-looking-local-creds-v5";
+const LOCAL_SESSION_KEY = "nice-looking-active-session-v5";
 
-// Default demo fallback store
+function getLocalCredentials() {
+  try {
+    const raw = localStorage.getItem(LOCAL_CREDENTIALS_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveLocalCredential(email, password, extra = {}) {
+  try {
+    const creds = getLocalCredentials();
+    const cleanEmail = String(email || "").trim().toLowerCase();
+    if (!cleanEmail) return;
+    creds[cleanEmail] = {
+      email: cleanEmail,
+      password: String(password || ""),
+      updatedAt: new Date().toISOString(),
+      ...(creds[cleanEmail] || {}),
+      ...extra
+    };
+    localStorage.setItem(LOCAL_CREDENTIALS_KEY, JSON.stringify(creds));
+  } catch {}
+}
+
+// Default Primary Salon Configuration
+export const defaultSalonsList = [
+  {
+    id: "default",
+    name: "NICE LOOKING (Main Branch)",
+    slug: "nice-looking-main",
+    subtitle: "Hair Wig & Hair Services",
+    mobile: "+91 98765 43210",
+    email: "sameershaikh584@gmail.com",
+    address: "Shop 4, Hill Road, Bandra West, Mumbai",
+    invoice_prefix: "NL",
+    whatsapp_number: "919876543210",
+    status: "ACTIVE",
+    owner_name: "Sameer Shaikh",
+    owner_email: "sameershaikh584@gmail.com",
+    created_at: "2026-08-01T00:00:00.000Z"
+  }
+];
+
+// Production Multi-Tenant Cache Store
 function getLocalDemoData() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) {
       const initial = {
-        customers: demoCustomers.map(c => ({
-          ...c,
-          id: String(c.id),
-          mobile: normalizeWhatsAppNumber(c.mobile),
-          whatsapp_opt_in: true
-        })),
-        products: demoProducts.map(p => ({
-          ...p,
-          id: String(p.id),
-          product_name: p.name,
-          hair_type: p.type,
-          size: p.size || "5x7",
-          price: Number(p.price || 0),
-          stock: Number(p.stock || 0),
-          active: true
-        })),
-        invoices: [
-          {
-            id: "inv-demo-1",
-            invoiceNumber: "NL-2026-000101",
-            name: "Rahul Sharma",
-            mobile: "9876543210",
-            address: "Mumbai",
-            service: "Hair Wig",
-            productId: "1",
-            productName: "Premium Natural Wig",
-            productSize: "5x7",
-            quantity: 1,
-            subtotal: 8000,
-            discount: 0,
-            amount: 8000,
-            total: 8000,
-            paymentMode: "UPI",
-            status: "PAID",
-            isVoided: false,
-            description: "First fitting included",
-            createdAt: "2026-08-19"
-          },
-          {
-            id: "inv-demo-2",
-            invoiceNumber: "NL-2026-000102",
-            name: "Amit Patel",
-            mobile: "9820012345",
-            address: "Vikhroli",
-            service: "Hair Color",
-            productId: null,
-            productName: "",
-            productSize: "",
-            quantity: 0,
-            subtotal: 1500,
-            discount: 0,
-            amount: 1500,
-            total: 1500,
-            paymentMode: "Cash",
-            status: "PAID",
-            isVoided: false,
-            description: "Touch up",
-            createdAt: "2026-08-19"
-          }
-        ]
+        customers: [],
+        products: [],
+        invoices: []
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(initial));
       return initial;
@@ -92,26 +82,30 @@ function saveLocalDemoData(data) {
   }
 }
 
+function getLocalSalons() {
+  try {
+    const raw = localStorage.getItem(SALONS_STORAGE_KEY);
+    if (!raw) {
+      localStorage.setItem(SALONS_STORAGE_KEY, JSON.stringify(defaultSalonsList));
+      return defaultSalonsList;
+    }
+    return JSON.parse(raw);
+  } catch {
+    return defaultSalonsList;
+  }
+}
+
+function saveLocalSalons(salons) {
+  try {
+    localStorage.setItem(SALONS_STORAGE_KEY, JSON.stringify(salons));
+  } catch {}
+}
+
 function getLocalAuditLogs() {
   try {
     const raw = localStorage.getItem(AUDIT_LOGS_KEY);
     if (!raw) {
-      const initialLogs = [
-        {
-          id: "log-seed-1",
-          action: "INVOICE_CREATE",
-          entityType: "invoice",
-          entityId: "inv-demo-1",
-          userId: "user-admin-1",
-          userName: "Admin",
-          userEmail: "admin@nicelooking.com",
-          userRole: "admin",
-          newData: { invoice_number: "NL-2026-000101", total: 8000, customer_name: "Rahul Sharma" },
-          reason: "",
-          details: "Created Invoice #NL-2026-000101 for ₹8,000",
-          createdAt: "2026-08-19T10:30:00.000Z"
-        }
-      ];
+      const initialLogs = [];
       localStorage.setItem(AUDIT_LOGS_KEY, JSON.stringify(initialLogs));
       return initialLogs;
     }
@@ -127,30 +121,51 @@ function saveLocalAuditLogs(logs) {
   } catch {}
 }
 
+function generateValidUUID() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    try {
+      return crypto.randomUUID();
+    } catch {}
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function(c) {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+function normalizeProfile(p) {
+  if (!p) return p;
+  const name = (p.full_name || p.fullName || p.name || (p.email ? p.email.split("@")[0] : "Staff Member")).trim();
+  const salon = p.salon_id || p.salonId || "default";
+  const assigned = Array.isArray(p.assigned_salons) ? p.assigned_salons : (Array.isArray(p.assignedSalons) ? p.assignedSalons : [salon]);
+  const mustChange = Boolean(p.must_change_password ?? p.mustChangePassword);
+  return {
+    ...p,
+    id: String(p.id),
+    email: p.email || "",
+    full_name: name,
+    fullName: name,
+    role: (p.role || "staff").toLowerCase(),
+    salon_id: salon,
+    salonId: salon,
+    assigned_salons: assigned,
+    assignedSalons: assigned,
+    must_change_password: mustChange,
+    mustChangePassword: mustChange,
+    created_at: p.created_at || new Date().toISOString()
+  };
+}
+
 function getLocalStaffProfiles() {
   try {
     const raw = localStorage.getItem(STAFF_PROFILES_KEY);
     if (!raw) {
-      const initialStaff = [
-        {
-          id: "staff-1",
-          email: "admin@nicelooking.com",
-          full_name: "Owner / Admin",
-          role: "admin",
-          created_at: "2026-08-01T00:00:00.000Z"
-        },
-        {
-          id: "staff-2",
-          email: "reception@nicelooking.com",
-          full_name: "Reception Desk",
-          role: "staff",
-          created_at: "2026-08-10T00:00:00.000Z"
-        }
-      ];
+      const initialStaff = [];
       localStorage.setItem(STAFF_PROFILES_KEY, JSON.stringify(initialStaff));
       return initialStaff;
     }
-    return JSON.parse(raw);
+    return JSON.parse(raw).map(normalizeProfile);
   } catch {
     return [];
   }
@@ -158,8 +173,297 @@ function getLocalStaffProfiles() {
 
 function saveLocalStaffProfiles(profiles) {
   try {
-    localStorage.setItem(STAFF_PROFILES_KEY, JSON.stringify(profiles));
+    const normalized = (profiles || []).map(normalizeProfile);
+    localStorage.setItem(STAFF_PROFILES_KEY, JSON.stringify(normalized));
   } catch {}
+}
+
+// -------------------------------------------------------------
+// Salons / Multi-Tenant Management
+// -------------------------------------------------------------
+export async function fetchSalons(userRole = "superadmin", userSalonId = "default", assignedSalons = [], userEmail = "") {
+  const normRole = (userRole || "staff").toLowerCase();
+  const isSuper = normRole === "superadmin" || normRole === "super_admin";
+  const cleanEmail = (userEmail || "").trim().toLowerCase();
+
+  let remoteSalons = null;
+  if (supabaseConfigured) {
+    try {
+      const { data, error } = await supabase
+        .from("salons")
+        .select("*")
+        .order("created_at", { ascending: true });
+
+      if (!error && Array.isArray(data) && data.length > 0) {
+        remoteSalons = data;
+      }
+    } catch (err) {
+      console.warn("fetchSalons Supabase query failed, using local cache:", err);
+    }
+  }
+
+  // Merge remote with local salons so no newly created branch is lost
+  const localSalons = getLocalSalons();
+  let mergedSalons = [...localSalons];
+
+  if (Array.isArray(remoteSalons) && remoteSalons.length > 0) {
+    const localMap = new Map(localSalons.map(s => [s.id, s]));
+    remoteSalons.forEach(s => {
+      localMap.set(s.id, { ...(localMap.get(s.id) || {}), ...s });
+    });
+    mergedSalons = Array.from(localMap.values());
+    saveLocalSalons(mergedSalons);
+  }
+
+  if (isSuper) {
+    return mergedSalons;
+  }
+
+  const assignedList = Array.isArray(assignedSalons) ? assignedSalons : [];
+
+  return mergedSalons.filter(s => {
+    // 1. Direct active salon ID
+    if (userSalonId && s.id === userSalonId) return true;
+    // 2. In assigned salons array
+    if (assignedList.includes(s.id)) return true;
+    // 3. Owned branch matching owner email
+    if (cleanEmail && s.owner_email && s.owner_email.trim().toLowerCase() === cleanEmail) return true;
+    // 4. Contact email match
+    if (cleanEmail && s.email && s.email.trim().toLowerCase() === cleanEmail) return true;
+    return false;
+  });
+}
+
+export async function saveSalon(salonData, actorInfo = null) {
+  const isNew = !salonData.id || salonData.id.startsWith("new-") || salonData.isNew === true;
+  const rawSlug = salonData.slug || salonData.name || "salon";
+  const slug = rawSlug.toLowerCase().replace(/[^a-z0-9]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+  const salonId = isNew
+    ? (salonData.id && !salonData.id.startsWith("new-") ? salonData.id : `salon-${slug || "branch"}-${Date.now().toString(36)}`)
+    : salonData.id;
+
+  const payload = {
+    id: salonId,
+    name: (salonData.name || "Salon Branch").trim(),
+    slug: slug || `salon-${Date.now()}`,
+    subtitle: (salonData.subtitle || "Hair Wig & Hair Services").trim(),
+    mobile: (salonData.mobile || "+91 98765 43210").trim(),
+    email: (salonData.email || "sameershaikh121@proton.me").trim(),
+    address: (salonData.address || "Mumbai, Maharashtra").trim(),
+    invoice_prefix: (salonData.invoice_prefix || "NL").trim().toUpperCase() || "NL",
+    whatsapp_number: (salonData.whatsapp_number || "919876543210").trim(),
+    status: salonData.status || "ACTIVE",
+    owner_name: (salonData.owner_name || actorInfo?.name || "Salon Owner").trim(),
+    owner_email: (salonData.owner_email || actorInfo?.email || "").trim(),
+    updated_at: new Date().toISOString()
+  };
+
+  if (isNew) {
+    payload.created_at = new Date().toISOString();
+  }
+
+  let finalSavedSalon = payload;
+
+  // Optimistically update local cache so the branch always appears immediately
+  const salons = getLocalSalons();
+  const idx = salons.findIndex(s => s.id === salonId);
+  if (idx >= 0) {
+    salons[idx] = { ...salons[idx], ...payload };
+  } else {
+    salons.push(payload);
+  }
+  saveLocalSalons(salons);
+
+  // Link newly created or updated branch to the owner's profile and credentials
+  const cleanOwnerEmail = (payload.owner_email || "").trim().toLowerCase();
+  if (cleanOwnerEmail) {
+    try {
+      const profiles = getLocalStaffProfiles();
+      const pIdx = profiles.findIndex(p => (p.email || "").toLowerCase() === cleanOwnerEmail);
+      if (pIdx >= 0) {
+        const curAssigned = Array.isArray(profiles[pIdx].assigned_salons)
+          ? profiles[pIdx].assigned_salons
+          : (Array.isArray(profiles[pIdx].assignedSalons) ? profiles[pIdx].assignedSalons : []);
+        if (!curAssigned.includes(salonId)) {
+          profiles[pIdx].assigned_salons = [...curAssigned, salonId];
+          profiles[pIdx].assignedSalons = [...curAssigned, salonId];
+          if (profiles[pIdx].role === "staff") {
+            profiles[pIdx].role = "owner";
+          }
+          saveLocalStaffProfiles(profiles);
+        }
+      }
+
+      const creds = getLocalCredentials();
+      if (creds[cleanOwnerEmail]) {
+        const credAssigned = Array.isArray(creds[cleanOwnerEmail].assignedSalons)
+          ? creds[cleanOwnerEmail].assignedSalons
+          : [creds[cleanOwnerEmail].salonId || "default"];
+        if (!credAssigned.includes(salonId)) {
+          creds[cleanOwnerEmail].assignedSalons = [...credAssigned, salonId];
+          if (creds[cleanOwnerEmail].role === "staff") {
+            creds[cleanOwnerEmail].role = "owner";
+          }
+          try {
+            localStorage.setItem(LOCAL_CREDENTIALS_KEY, JSON.stringify(creds));
+          } catch {}
+        }
+      }
+    } catch (syncErr) {
+      console.warn("Owner local sync note:", syncErr);
+    }
+  }
+
+  if (supabaseConfigured) {
+    let supabaseSucceeded = false;
+
+    // 1. Try atomic RPC procedure: save_salon_branch
+    try {
+      const { data: rpcData, error: rpcErr } = await supabase.rpc("save_salon_branch", {
+        p_id: payload.id,
+        p_name: payload.name,
+        p_slug: payload.slug,
+        p_subtitle: payload.subtitle,
+        p_invoice_prefix: payload.invoice_prefix,
+        p_mobile: payload.mobile,
+        p_email: payload.email,
+        p_address: payload.address,
+        p_whatsapp_number: payload.whatsapp_number,
+        p_owner_name: payload.owner_name,
+        p_owner_email: payload.owner_email,
+        p_status: payload.status
+      });
+
+      if (!rpcErr && rpcData) {
+        finalSavedSalon = rpcData;
+        supabaseSucceeded = true;
+      } else if (rpcErr) {
+        console.warn("save_salon_branch RPC note (falling back to direct table write):", rpcErr.message);
+      }
+    } catch (rpcEx) {
+      console.warn("save_salon_branch RPC exception:", rpcEx);
+    }
+
+    // 2. Direct table upsert fallback
+    if (!supabaseSucceeded) {
+      try {
+        const { data: upsData, error: upsErr } = await supabase
+          .from("salons")
+          .upsert(payload)
+          .select()
+          .maybeSingle();
+
+        if (!upsErr && upsData) {
+          finalSavedSalon = upsData;
+          supabaseSucceeded = true;
+        } else if (upsErr) {
+          console.warn("Direct salons upsert warning (saved locally). Run supabase/COMPLETE_SUPABASE_FIX.sql in Supabase SQL Editor to grant full DB permissions:", upsErr.message);
+        }
+      } catch (directErr) {
+        console.warn("Supabase direct salon write warning (saved locally):", directErr);
+      }
+    }
+
+    // Re-sync local cache with remote result
+    if (supabaseSucceeded && finalSavedSalon) {
+      const updatedSalons = getLocalSalons();
+      const uIdx = updatedSalons.findIndex(s => s.id === salonId);
+      if (uIdx >= 0) {
+        updatedSalons[uIdx] = { ...updatedSalons[uIdx], ...finalSavedSalon };
+      } else {
+        updatedSalons.push(finalSavedSalon);
+      }
+      saveLocalSalons(updatedSalons);
+    }
+  }
+
+  logAuditEvent({
+    action: isNew ? "SALON_CREATE" : "SALON_UPDATE",
+    entityType: "salon",
+    entityId: salonId,
+    userId: actorInfo?.id,
+    userName: actorInfo?.name,
+    userRole: actorInfo?.role,
+    salonId: salonId,
+    newData: finalSavedSalon,
+    details: `${isNew ? "Created" : "Updated"} Salon Branch: ${payload.name} (${payload.invoice_prefix})`
+  }).catch(() => {});
+
+  return finalSavedSalon;
+}
+
+export async function deleteSalon(salonId, actorInfo = null) {
+  if (!salonId || salonId === "default") {
+    throw new Error("Cannot delete the primary/default salon branch.");
+  }
+
+  if (supabaseConfigured) {
+    let rpcDone = false;
+
+    // 1. Try atomic RPC delete_salon_branch
+    try {
+      const { data, error } = await supabase.rpc("delete_salon_branch", {
+        p_salon_id: salonId
+      });
+      if (!error) {
+        rpcDone = true;
+      } else {
+        console.warn("delete_salon_branch RPC note, executing direct cleanup:", error.message);
+      }
+    } catch (rpcErr) {
+      console.warn("delete_salon_branch RPC exception:", rpcErr);
+    }
+
+    // 2. Direct cascade delete fallback
+    if (!rpcDone) {
+      try {
+        await supabase
+          .from("profiles")
+          .update({ salon_id: "default", updated_at: new Date().toISOString() })
+          .eq("salon_id", salonId);
+
+        await supabase.from("whatsapp_messages").delete().eq("salon_id", salonId);
+        await supabase.from("offers").delete().eq("salon_id", salonId);
+        await supabase.from("invoices").delete().eq("salon_id", salonId);
+        await supabase.from("transactions").delete().eq("salon_id", salonId);
+        await supabase.from("wig_products").delete().eq("salon_id", salonId);
+        await supabase.from("services").delete().eq("salon_id", salonId);
+        await supabase.from("customers").delete().eq("salon_id", salonId);
+
+        await supabase
+          .from("salons")
+          .delete()
+          .eq("id", salonId);
+      } catch (delError) {
+        console.warn("Supabase deleteSalon warning (cleaning local storage):", delError);
+      }
+    }
+  }
+
+  // Synchronize local storage
+  const salons = getLocalSalons().filter(s => s.id !== salonId);
+  saveLocalSalons(salons);
+
+  // If active salon was deleted, reset active salon to default
+  try {
+    const activeId = localStorage.getItem("nice-looking-active-salon-id");
+    if (activeId === salonId) {
+      localStorage.setItem("nice-looking-active-salon-id", "default");
+    }
+  } catch {}
+
+  logAuditEvent({
+    action: "SALON_DELETE",
+    entityType: "salon",
+    entityId: salonId,
+    userId: actorInfo?.id,
+    userName: actorInfo?.name,
+    userRole: actorInfo?.role,
+    salonId: salonId,
+    details: `Permanently deleted Salon Branch ID: ${salonId}`
+  }).catch(() => {});
+
+  return true;
 }
 
 // -------------------------------------------------------------
@@ -169,16 +473,23 @@ export async function getSession() {
   if (supabase && supabase.auth) {
     try {
       const { data, error } = await supabase.auth.getSession();
-      if (error) {
-        console.error("Supabase getSession error:", error);
-        return null;
+      if (!error && data?.session) {
+        return data.session;
       }
-      return data?.session || null;
     } catch (err) {
       console.error("Failed to retrieve Supabase session:", err);
-      return null;
     }
   }
+
+  // Fallback to active local session
+  try {
+    const raw = localStorage.getItem(LOCAL_SESSION_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.user) return parsed;
+    }
+  } catch {}
+
   return null;
 }
 
@@ -197,28 +508,117 @@ export async function loginUser(email, password) {
   if (!cleanEmail || !password) {
     throw new Error("Email and password are required.");
   }
-  if (supabase && supabase.auth) {
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email: cleanEmail,
-      password
-    });
-    if (error) throw error;
 
-    // Record login audit event asynchronously
-    if (data?.user?.id) {
+  let supabaseSession = null;
+  let supabaseAuthError = null;
+  let isNetworkError = false;
+
+  if (supabase && supabase.auth && supabaseConfigured) {
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: cleanEmail,
+        password
+      });
+      if (error) {
+        supabaseAuthError = error;
+        const msg = (error.message || "").toLowerCase();
+        if (msg.includes("failed to fetch") || msg.includes("network") || msg.includes("timeout") || msg.includes("connection")) {
+          isNetworkError = true;
+        }
+      } else if (data?.session) {
+        supabaseSession = data.session;
+      }
+    } catch (err) {
+      supabaseAuthError = err;
+      isNetworkError = true;
+    }
+  }
+
+  if (supabaseSession) {
+    try {
+      localStorage.removeItem(LOCAL_SESSION_KEY);
+    } catch {}
+
+    // Synchronize successful password to local credentials vault immediately
+    saveLocalCredential(cleanEmail, password, {
+      role: supabaseSession.user?.user_metadata?.role,
+      salonId: supabaseSession.user?.user_metadata?.salon_id,
+      mustChangePassword: Boolean(supabaseSession.user?.user_metadata?.must_change_password)
+    });
+
+    if (supabaseSession.user?.id) {
       logAuditEvent({
         action: "LOGIN",
         entityType: "auth",
-        entityId: data.user.id,
-        userId: data.user.id,
-        userEmail: data.user.email,
-        details: `User ${data.user.email} logged into the portal.`
+        entityId: supabaseSession.user.id,
+        userId: supabaseSession.user.id,
+        userEmail: supabaseSession.user.email,
+        details: `User ${supabaseSession.user.email} logged into the portal.`
       }).catch(err => console.warn("Failed to log login event:", err));
     }
 
-    return data?.session || null;
+    return supabaseSession;
   }
-  throw new Error("Supabase is not configured. Please set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in your .env file.");
+
+  // If Supabase is configured and responded with invalid credentials, REJECT the login!
+  // Never allow outdated/old credentials to log in when Supabase is live and actively rejected the password.
+  if (supabaseConfigured && supabaseAuthError && !isNetworkError) {
+    throw supabaseAuthError;
+  }
+
+  // Resilience & Offline Fallback: Check local vault credentials ONLY when offline / demo accounts
+  const localCreds = getLocalCredentials();
+  const matchedCred = localCreds[cleanEmail];
+  const localProfiles = getLocalStaffProfiles();
+  const matchedProfile = localProfiles.find(p => p.email?.toLowerCase() === cleanEmail);
+
+  // Check if credentials match in local store or if profile exists
+  if (matchedCred && matchedCred.password === password) {
+    const localUser = matchedProfile || {
+      id: "local-user-" + cleanEmail.replace(/[^a-z0-9]/g, "-"),
+      email: cleanEmail,
+      fullName: cleanEmail.split("@")[0],
+      role: matchedCred.role || "staff",
+      salonId: matchedCred.salonId || "default",
+      mustChangePassword: Boolean(matchedCred.mustChangePassword)
+    };
+
+    const localSession = {
+      access_token: "local-token-" + Date.now(),
+      token_type: "bearer",
+      user: {
+        id: localUser.id || ("local-" + cleanEmail),
+        email: cleanEmail,
+        user_metadata: {
+          full_name: localUser.fullName || localUser.full_name,
+          role: localUser.role,
+          salon_id: localUser.salonId || localUser.salon_id,
+          must_change_password: Boolean(localUser.mustChangePassword)
+        }
+      }
+    };
+
+    try {
+      localStorage.setItem(LOCAL_SESSION_KEY, JSON.stringify(localSession));
+    } catch {}
+
+    logAuditEvent({
+      action: "LOGIN",
+      entityType: "auth",
+      entityId: localSession.user.id,
+      userId: localSession.user.id,
+      userEmail: cleanEmail,
+      details: `User ${cleanEmail} logged into the portal (Local / Offline Session).`
+    }).catch(() => {});
+
+    return localSession;
+  }
+
+  if (supabaseAuthError) {
+    throw supabaseAuthError;
+  }
+
+  throw new Error("Invalid login credentials");
 }
 
 export async function registerUser(email, password, name) {
@@ -244,7 +644,7 @@ export async function registerUser(email, password, name) {
     if (error) {
       const errMsg = (error.message || "").toLowerCase();
       if (errMsg.includes("rate limit") || errMsg.includes("too many") || error.code === "over_email_send_rate_limit") {
-        throw new Error("Email sending rate limit reached. Please wait a few minutes before trying again, or configure custom SMTP in Supabase.");
+        throw new Error("Email sending rate limit reached. Please wait a few minutes before trying again.");
       }
       if (errMsg.includes("already registered") || errMsg.includes("already exists")) {
         throw new Error("An account with this email address already exists. Please log in or reset your password.");
@@ -256,7 +656,6 @@ export async function registerUser(email, password, name) {
       throw new Error("An account with this email address already exists. Please log in or reset your password.");
     }
 
-    // Ensure session is cleared so user is never automatically logged into the Dashboard before OTP verification
     if (data?.session) {
       try {
         await supabase.auth.signOut();
@@ -282,11 +681,6 @@ export async function registerUser(email, password, name) {
   };
 }
 
-/**
- * Verifies the 6-digit OTP code submitted by the user after registration.
- * Explicitly signs out any generated session to ensure the user is not automatically logged into the Dashboard,
- * requiring an explicit email + password login on the Login page.
- */
 export async function verifySignUpOtp(email, token) {
   const cleanEmail = String(email || "").trim().toLowerCase();
   const cleanToken = String(token || "").trim();
@@ -298,53 +692,54 @@ export async function verifySignUpOtp(email, token) {
   }
 
   if (supabaseConfigured && supabase?.auth) {
-    // 1. Attempt verification with 'signup' type (email OTP verification)
-    let { data, error } = await supabase.auth.verifyOtp({
-      email: cleanEmail,
-      token: cleanToken,
-      type: "signup"
-    });
+    let verifyError = null;
+    let data = null;
 
-    // 2. Fallback: If 'signup' type fails (e.g. Supabase instance uses 'email'), try 'email' type
-    if (error) {
-      const retry = await supabase.auth.verifyOtp({
+    try {
+      const res = await supabase.auth.verifyOtp({
         email: cleanEmail,
         token: cleanToken,
-        type: "email"
+        type: "signup"
       });
-      if (!retry.error) {
-        data = retry.data;
-        error = null;
-      }
+      data = res.data;
+      verifyError = res.error;
+    } catch (e) {
+      verifyError = e;
     }
 
-    if (error) {
-      const errMsg = (error.message || "").toLowerCase();
-      if (errMsg.includes("expired") || errMsg.includes("invalid") || errMsg.includes("token") || errMsg.includes("otp")) {
-        throw new Error("Invalid or expired 6-digit OTP code. Please verify the code or click 'Resend OTP'.");
-      }
-      throw new Error(error.message || "Invalid OTP code. Please check and try again.");
+    if (verifyError) {
+      try {
+        const fallbackRes = await supabase.auth.verifyOtp({
+          email: cleanEmail,
+          token: cleanToken,
+          type: "email"
+        });
+        if (!fallbackRes.error) {
+          data = fallbackRes.data;
+          verifyError = null;
+        }
+      } catch {}
     }
 
-    // Explicitly sign out so user is NEVER automatically logged into the Dashboard after OTP verification.
-    // The user must be redirected to the Login page to authenticate with email + password.
+    if (verifyError) {
+      throw verifyError;
+    }
+
     try {
       await supabase.auth.signOut();
     } catch {}
 
-    // Record verification audit event asynchronously
-    const userId = data?.user?.id;
+    const userId = data?.user?.id || "verified-user";
     const userEmail = data?.user?.email || cleanEmail;
-    if (userId) {
-      logAuditEvent({
-        action: "REGISTER_OTP_VERIFIED",
-        entityType: "auth",
-        entityId: userId,
-        userId: userId,
-        userEmail: userEmail,
-        details: `User ${userEmail} verified 6-digit OTP successfully.`
-      }).catch(err => console.warn("Failed to log OTP verify event:", err));
-    }
+
+    logAuditEvent({
+      action: "OTP_VERIFIED",
+      entityType: "auth",
+      entityId: userId,
+      userId: userId,
+      userEmail: userEmail,
+      details: `User ${userEmail} verified 6-digit OTP successfully.`
+    }).catch(() => {});
 
     return {
       success: true,
@@ -353,7 +748,7 @@ export async function verifySignUpOtp(email, token) {
     };
   }
 
-  // Offline / Demo verification simulation
+  // Demo Mode
   if (cleanToken === "123456" || cleanToken.length === 6) {
     return {
       success: true,
@@ -361,16 +756,14 @@ export async function verifySignUpOtp(email, token) {
       user: {
         id: "demo-user-" + Date.now(),
         email: cleanEmail,
-        user_metadata: { full_name: "Staff Member" }
+        user_metadata: { full_name: "Verified User" }
       }
     };
   }
-  throw new Error("Invalid demo verification code. Use 123456 in demo mode.");
+
+  throw new Error("Invalid 6-digit OTP code. (In demo mode, use 123456).");
 }
 
-/**
- * Resends the signup confirmation OTP code to user's email.
- */
 export async function resendSignUpOtp(email) {
   const cleanEmail = String(email || "").trim().toLowerCase();
   if (!cleanEmail) {
@@ -378,71 +771,87 @@ export async function resendSignUpOtp(email) {
   }
 
   if (supabaseConfigured && supabase?.auth) {
-    const { data, error } = await supabase.auth.resend({
+    const { error } = await supabase.auth.resend({
       type: "signup",
       email: cleanEmail
     });
-
     if (error) {
-      console.warn("Supabase resend signup failed:", error);
-      const errMsg = (error.message || "").toLowerCase();
-      if (errMsg.includes("rate") || errMsg.includes("too many") || errMsg.includes("wait") || errMsg.includes("security")) {
-        throw new Error("Please wait a moment before requesting another OTP code.");
-      }
-      throw new Error(error.message || "Failed to resend OTP code. Please try again.");
+      const { error: err2 } = await supabase.auth.resend({
+        type: "signup",
+        email: cleanEmail
+      });
+      if (err2) throw err2;
     }
-    return data;
+    return true;
   }
 
-  return { message: "Demo OTP code resent (Use: 123456 in demo mode)" };
+  return true;
 }
 
 export async function resetPasswordForEmail(email) {
   const cleanEmail = String(email || "").trim().toLowerCase();
   if (!cleanEmail) {
-    throw new Error("Please enter your registered email address.");
+    throw new Error("Email address is required to send password reset.");
   }
-  if (supabase && supabase.auth) {
-    const redirectUrl = `${getAppBaseUrl()}/reset-password`;
-    const { data, error } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
-      redirectTo: redirectUrl
+
+  if (supabaseConfigured && supabase?.auth) {
+    const appBase = getAppBaseUrl();
+    const redirectTo = `${appBase}/reset-password`;
+
+    const { error } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
+      redirectTo
     });
     if (error) throw error;
-    return data;
+    return true;
   }
-  throw new Error("Supabase is not configured.");
+
+  return true;
 }
 
 export async function verifyPasswordResetOtp(email, token) {
   const cleanEmail = String(email || "").trim().toLowerCase();
   const cleanToken = String(token || "").trim();
-  if (!cleanEmail || !cleanToken) {
-    throw new Error("Email and OTP code are required.");
-  }
-  if (supabase && supabase.auth) {
+
+  if (supabaseConfigured && supabase?.auth) {
     const { data, error } = await supabase.auth.verifyOtp({
       email: cleanEmail,
       token: cleanToken,
       type: "recovery"
     });
     if (error) throw error;
-    return data?.session || null;
+    return data;
   }
-  throw new Error("Supabase is not configured.");
+
+  return { success: true };
 }
 
 export async function updatePassword(newPassword) {
   if (!newPassword || newPassword.length < 6) {
-    throw new Error("Password must be at least 6 characters long.");
+    throw new Error("New password must be at least 6 characters.");
   }
-  if (supabase && supabase.auth) {
+
+  // Update local session / credential if present
+  try {
+    const raw = localStorage.getItem(LOCAL_SESSION_KEY);
+    if (raw) {
+      const sess = JSON.parse(raw);
+      if (sess?.user?.email) {
+        saveLocalCredential(sess.user.email, newPassword, {
+          mustChangePassword: false
+        });
+      }
+    }
+  } catch {}
+
+  if (supabaseConfigured && supabase?.auth) {
     const { data, error } = await supabase.auth.updateUser({
       password: newPassword
     });
     if (error) throw error;
     return data;
   }
-  throw new Error("Supabase is not configured.");
+
+  return { success: true };
 }
 
 export async function logoutUser() {
@@ -450,110 +859,164 @@ export async function logoutUser() {
     try {
       await supabase.auth.signOut();
     } catch (err) {
-      console.error("Supabase signOut error:", err);
+      console.warn("Supabase signOut warning:", err);
     }
   }
+  try {
+    localStorage.removeItem(LOCAL_SESSION_KEY);
+  } catch {}
+  return true;
 }
 
-/**
- * Fetches user profile containing RBAC role ('admin', 'owner', 'staff') and full_name.
- */
 export async function fetchUserProfile(userId, fallbackEmail = null) {
-  if (!userId) return null;
+  if (!userId && !fallbackEmail) return null;
+  const cleanEmail = (fallbackEmail || "").trim().toLowerCase();
 
-  if (supabaseConfigured) {
+  const allSalons = getLocalSalons();
+  const ownedSalonIds = allSalons
+    .filter(s => cleanEmail && s.owner_email && s.owner_email.trim().toLowerCase() === cleanEmail)
+    .map(s => s.id);
+
+  if (supabaseConfigured && userId && !String(userId).startsWith("local-")) {
     try {
       const { data, error } = await supabase
         .from("profiles")
-        .select("id, full_name, role, created_at, updated_at")
+        .select("*")
         .eq("id", userId)
         .maybeSingle();
 
-      if (error) {
-        console.warn("Could not load user profile from profiles table:", error);
-      }
+      if (!error && data) {
+        const rawAssigned = Array.isArray(data.assigned_salons) ? data.assigned_salons : [data.salon_id || "default"];
+        const mergedAssigned = Array.from(new Set([...rawAssigned, ...ownedSalonIds]));
+        const effectiveRole = (data.role === "staff" && ownedSalonIds.length > 0) ? "owner" : (data.role || "staff");
 
-      let email = fallbackEmail;
-      if (!email) {
-        try {
-          const { data: authData } = await supabase.auth.getUser();
-          if (authData?.user?.id === userId) {
-            email = authData.user.email;
-          }
-        } catch {}
-      }
-
-      if (data) {
-        return {
+        return normalizeProfile({
           id: data.id,
-          email: email || "user@nicelooking.com",
-          fullName: data.full_name || (email ? email.split("@")[0] : "User"),
-          role: data.role || "staff"
-        };
-      } else if (email) {
-        return {
-          id: userId,
-          email: email,
-          fullName: email.split("@")[0] || "User",
-          role: "staff"
-        };
+          email: data.email || fallbackEmail,
+          full_name: data.full_name || fallbackEmail?.split("@")[0] || "User",
+          role: effectiveRole,
+          salon_id: data.salon_id || (mergedAssigned[0] || "default"),
+          assigned_salons: mergedAssigned,
+          assignedSalons: mergedAssigned,
+          must_change_password: Boolean(data.must_change_password)
+        });
       }
     } catch (err) {
-      console.warn("fetchUserProfile error:", err);
+      console.warn("fetchUserProfile Supabase note:", err);
     }
   }
 
-  // Demo Fallback
+  // Local / Demo Fallback
   const profiles = getLocalStaffProfiles();
-  const found = profiles.find(p => p.id === userId || p.email === userId);
+  const found = profiles.find(p => p.id === userId || (cleanEmail && p.email?.toLowerCase() === cleanEmail));
+  const creds = getLocalCredentials();
+  const cred = creds[cleanEmail];
+
   if (found) {
-    return {
-      id: found.id,
-      email: found.email,
-      fullName: found.full_name,
-      role: found.role
-    };
+    const rawAssigned = Array.isArray(found.assigned_salons) ? found.assigned_salons : (Array.isArray(found.assignedSalons) ? found.assignedSalons : [found.salon_id || "default"]);
+    const mergedAssigned = Array.from(new Set([...rawAssigned, ...ownedSalonIds]));
+    const effectiveRole = (found.role === "staff" && ownedSalonIds.length > 0) ? "owner" : (found.role || cred?.role || "staff");
+    const mustChange = cred && typeof cred.mustChangePassword === "boolean" ? cred.mustChangePassword : found.must_change_password;
+    return normalizeProfile({
+      ...found,
+      role: effectiveRole,
+      assigned_salons: mergedAssigned,
+      assignedSalons: mergedAssigned,
+      must_change_password: Boolean(mustChange),
+      mustChangePassword: Boolean(mustChange)
+    });
   }
-  return {
-    id: userId,
-    email: fallbackEmail || "admin@nicelooking.com",
-    fullName: "Admin",
-    role: "admin"
-  };
+
+  const defaultAssigned = cred?.role === "superadmin" ? Array.from(new Set(["default", ...allSalons.map(s => s.id)])) : [cred?.salonId || "default"];
+  const mergedAssigned = Array.from(new Set([...defaultAssigned, ...ownedSalonIds]));
+  const effectiveRole = cred?.role || (ownedSalonIds.length > 0 ? "owner" : "superadmin");
+
+  return normalizeProfile({
+    id: userId || ("local-" + cleanEmail),
+    email: fallbackEmail,
+    fullName: fallbackEmail ? fallbackEmail.split("@")[0] : "Staff",
+    full_name: fallbackEmail ? fallbackEmail.split("@")[0] : "Staff",
+    role: effectiveRole,
+    salonId: cred?.salonId || (mergedAssigned[0] || "default"),
+    salon_id: cred?.salonId || (mergedAssigned[0] || "default"),
+    assignedSalons: mergedAssigned,
+    assigned_salons: mergedAssigned,
+    mustChangePassword: cred?.mustChangePassword ?? false,
+    must_change_password: cred?.mustChangePassword ?? false
+  });
 }
 
 // -------------------------------------------------------------
-// Staff Management (Owner/Admin Only)
+// Staff Management & RBAC
 // -------------------------------------------------------------
-export async function fetchStaffUsers() {
+export async function fetchStaffUsers(salonId = null) {
+  let fetchedProfiles = null;
+
   if (supabaseConfigured) {
     try {
-      const { data: profs, error } = await supabase
-        .from("profiles")
-        .select("id, full_name, role, created_at, updated_at")
-        .order("created_at", { ascending: false });
-
-      if (!error && profs && profs.length > 0) {
-        return profs.map(p => ({
-          id: p.id,
-          email: `${(p.full_name || "staff").toLowerCase().replace(/\s+/g, "")}@nicelooking.com`,
-          full_name: p.full_name || "Staff Member",
-          role: p.role || "staff",
-          created_at: p.created_at
-        }));
+      const filterParam = !salonId || salonId === "all" ? null : salonId;
+      const { data, error } = await supabase.rpc("get_staff_users", {
+        p_salon_id: filterParam
+      });
+      if (!error && Array.isArray(data) && data.length > 0) {
+        fetchedProfiles = data.map(normalizeProfile);
       }
     } catch (err) {
-      console.warn("fetchStaffUsers query failed:", err);
+      console.warn("get_staff_users RPC note, querying profiles table directly:", err);
+    }
+
+    if (!fetchedProfiles) {
+      try {
+        let query = supabase.from("profiles").select("*").order("created_at", { ascending: false });
+        const { data, error } = await query;
+        if (!error && Array.isArray(data) && data.length > 0) {
+          fetchedProfiles = data.map(normalizeProfile);
+        }
+      } catch (err) {
+        console.warn("Direct profiles table query note:", err);
+      }
     }
   }
 
-  // Demo Fallback
-  return getLocalStaffProfiles();
+  // Get local profiles
+  const localProfiles = getLocalStaffProfiles().map(normalizeProfile);
+
+  // Merge remote and local profiles by email and id
+  const profileMap = new Map();
+  // Put local profiles in map
+  localProfiles.forEach(p => {
+    if (p.email) profileMap.set(p.email.toLowerCase(), p);
+    if (p.id) profileMap.set(p.id, p);
+  });
+  // Overlay remote profiles if available
+  if (Array.isArray(fetchedProfiles)) {
+    fetchedProfiles.forEach(p => {
+      const key = (p.email || p.id).toLowerCase();
+      const existing = profileMap.get(key) || profileMap.get(p.id) || {};
+      const merged = normalizeProfile({ ...existing, ...p });
+      profileMap.set(key, merged);
+      if (p.id) profileMap.set(p.id, merged);
+    });
+  }
+
+  const allProfiles = Array.from(new Set(profileMap.values()));
+  saveLocalStaffProfiles(allProfiles);
+
+  if (salonId && salonId !== "all") {
+    return allProfiles.filter(p => 
+      p.salon_id === salonId || 
+      p.salonId === salonId || 
+      (p.assigned_salons || []).includes(salonId) || 
+      (p.assignedSalons || []).includes(salonId) ||
+      p.role === "superadmin"
+    );
+  }
+
+  return allProfiles;
 }
 
-export async function createStaffUser(email, password, fullName, actorInfo) {
+export async function createStaffUser(email, password, fullName, actorInfo = null, salonId = "default", role = "staff", mustChangePassword = true) {
   const cleanEmail = String(email || "").trim().toLowerCase();
-  const cleanName = String(fullName || "").trim() || "Staff Member";
   if (!cleanEmail || !password) {
     throw new Error("Email and password are required.");
   }
@@ -561,1619 +1024,1705 @@ export async function createStaffUser(email, password, fullName, actorInfo) {
     throw new Error("Password must be at least 6 characters long.");
   }
 
+  const existingProfiles = getLocalStaffProfiles();
+  const existingUser = existingProfiles.find(p => (p.email || "").toLowerCase() === cleanEmail);
+  const existingAssigned = existingUser
+    ? (Array.isArray(existingUser.assigned_salons) ? existingUser.assigned_salons : (Array.isArray(existingUser.assignedSalons) ? existingUser.assignedSalons : []))
+    : [];
+
+  const allSalons = getLocalSalons();
+  const ownedSalonIds = allSalons
+    .filter(s => s.owner_email && s.owner_email.trim().toLowerCase() === cleanEmail)
+    .map(s => s.id);
+
+  let finalUserId = existingUser?.id || generateValidUUID();
+  const trimmedName = (fullName || existingUser?.fullName || existingUser?.full_name || cleanEmail.split("@")[0] || "Staff").trim();
+  const assignedSalonsList = role === "superadmin"
+    ? Array.from(new Set(["default", ...allSalons.map(s => s.id)]))
+    : Array.from(new Set([...existingAssigned, ...ownedSalonIds, salonId]));
+
+  // Save credential locally immediately for fast fallback & offline resilience
+  saveLocalCredential(cleanEmail, password, {
+    role,
+    salonId: existingUser?.salonId || salonId,
+    assignedSalons: assignedSalonsList,
+    fullName: trimmedName,
+    mustChangePassword: Boolean(mustChangePassword)
+  });
+
   if (supabaseConfigured) {
     const isolatedClient = createIsolatedClient();
-    if (!isolatedClient) {
-      throw new Error("Could not initialize isolated Supabase client.");
-    }
+    if (isolatedClient) {
+      try {
+        const { data, error } = await isolatedClient.auth.signUp({
+          email: cleanEmail,
+          password,
+          options: {
+            data: {
+              full_name: trimmedName,
+              name: trimmedName,
+              salon_id: salonId,
+              role: role,
+              must_change_password: Boolean(mustChangePassword)
+            }
+          }
+        });
 
-    const { data, error } = await isolatedClient.auth.signUp({
-      email: cleanEmail,
-      password,
-      options: {
-        data: {
-          full_name: cleanName,
-          name: cleanName
+        if (error) {
+          const msg = (error.message || "").toLowerCase();
+          if (msg.includes("already registered") || msg.includes("already exists") || msg.includes("user already registered")) {
+            console.log("User already exists in Supabase auth; updating assigned branches:", cleanEmail);
+          } else {
+            console.warn("isolatedClient auth.signUp note (saved to local vault and database):", error.message);
+          }
+        } else if (data?.user?.id) {
+          finalUserId = data.user.id;
         }
+      } catch (authErr) {
+        console.warn("auth.signUp exception, ensuring profile is updated:", authErr);
       }
-    });
 
-    if (error) throw error;
-
-    if (data?.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
-      throw new Error("An account with this email address already exists.");
+      // Upsert profile into public.profiles with complete assigned salons
+      try {
+        await supabase
+          .from("profiles")
+          .upsert({
+            id: finalUserId,
+            email: cleanEmail,
+            full_name: trimmedName,
+            role: role,
+            salon_id: salonId,
+            assigned_salons: assignedSalonsList,
+            must_change_password: Boolean(mustChangePassword),
+            updated_at: new Date().toISOString()
+          });
+      } catch (profErr) {
+        console.warn("Direct profile upsert note:", profErr);
+      }
     }
-
-    // Log the staff creation audit event
-    await logAuditEvent({
-      action: "STAFF_CREATE",
-      entityType: "user",
-      entityId: data?.user?.id,
-      userId: actorInfo?.id,
-      userEmail: actorInfo?.email,
-      userName: actorInfo?.name,
-      userRole: actorInfo?.role,
-      newData: {
-        email: cleanEmail,
-        full_name: cleanName,
-        role: "staff"
-      },
-      details: `Created new Staff account for ${cleanName} (${cleanEmail})`
-    });
-
-    return data?.user || { email: cleanEmail, full_name: cleanName, role: "staff" };
   }
 
-  // Demo Fallback
-  const profiles = getLocalStaffProfiles();
-  if (profiles.some(p => p.email.toLowerCase() === cleanEmail)) {
-    throw new Error("An account with this email address already exists.");
-  }
-  const newStaff = {
-    id: `staff-${Date.now()}`,
+  // Normalized staff object
+  const newStaff = normalizeProfile({
+    id: finalUserId,
     email: cleanEmail,
-    full_name: cleanName,
-    role: "staff",
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString()
-  };
-  profiles.unshift(newStaff);
+    full_name: trimmedName,
+    fullName: trimmedName,
+    role: role,
+    salon_id: existingUser?.salonId || salonId,
+    salonId: existingUser?.salonId || salonId,
+    assigned_salons: assignedSalonsList,
+    assignedSalons: assignedSalonsList,
+    must_change_password: Boolean(mustChangePassword),
+    mustChangePassword: Boolean(mustChangePassword),
+    created_at: existingUser?.created_at || new Date().toISOString()
+  });
+
+  // Keep local profiles in sync immediately
+  const profiles = getLocalStaffProfiles().map(normalizeProfile);
+  const existingIdx = profiles.findIndex(p => p.email.toLowerCase() === cleanEmail || p.id === finalUserId);
+  if (existingIdx >= 0) {
+    profiles[existingIdx] = { ...profiles[existingIdx], ...newStaff };
+  } else {
+    profiles.unshift(newStaff);
+  }
   saveLocalStaffProfiles(profiles);
 
   logAuditEvent({
-    action: "STAFF_CREATE",
+    action: existingUser ? "USER_ROLE_UPDATE" : "USER_CREATE",
     entityType: "user",
-    entityId: newStaff.id,
+    entityId: finalUserId,
     userId: actorInfo?.id,
-    userEmail: actorInfo?.email,
     userName: actorInfo?.name,
     userRole: actorInfo?.role,
-    newData: { email: cleanEmail, full_name: cleanName, role: "staff" },
-    details: `Created new Staff account for ${cleanName} (${cleanEmail})`
-  });
+    salonId: salonId,
+    newData: newStaff,
+    details: `${existingUser ? "Linked existing" : "Created new"} ${role === "owner" ? "Salon Owner" : "staff"} account: ${trimmedName} (${cleanEmail}) [Role: ${role.toUpperCase()}, Salon: ${salonId}, Temp Password: ${mustChangePassword ? "YES" : "NO"}]`
+  }).catch(() => {});
 
   return newStaff;
 }
 
-export async function updateStaffRole(userId, newRole, actorInfo) {
-  if (!["admin", "owner", "staff"].includes(newRole)) {
-    throw new Error("Invalid role. Role must be 'admin', 'owner', or 'staff'.");
+export async function changeFirstLoginPassword(newPassword, userProfile) {
+  if (!newPassword || newPassword.length < 6) {
+    throw new Error("New permanent password must be at least 6 characters long.");
   }
 
+  const cleanEmail = String(userProfile?.email || userProfile?.user?.email || "").trim().toLowerCase();
+  const userId = userProfile?.id || userProfile?.user?.id;
+
+  // 1. Update Supabase Auth password & metadata FIRST
+  if (supabaseConfigured && supabase?.auth) {
+    let authUpdated = false;
+
+    // A. Direct update if active Supabase session exists
+    try {
+      const { data: sessData } = await supabase.auth.getSession();
+      if (sessData?.session) {
+        const { data: updData, error: updErr } = await supabase.auth.updateUser({
+          password: newPassword,
+          data: {
+            must_change_password: false,
+            mustChangePassword: false
+          }
+        });
+        if (!updErr && updData?.user) {
+          authUpdated = true;
+        } else if (updErr) {
+          console.warn("Direct auth.updateUser note:", updErr.message);
+          throw updErr;
+        }
+      }
+    } catch (sessErr) {
+      console.warn("getSession check note:", sessErr);
+      if (sessErr.message && !sessErr.message.includes("getSession")) {
+        throw sessErr;
+      }
+    }
+
+    // B. If no active Supabase session was present, re-authenticate with previous temp password to establish session, then update
+    if (!authUpdated && cleanEmail) {
+      const localCreds = getLocalCredentials();
+      const prevPassword = localCreds[cleanEmail]?.password;
+      if (prevPassword && prevPassword !== newPassword) {
+        try {
+          const { data: reauthData, error: reauthErr } = await supabase.auth.signInWithPassword({
+            email: cleanEmail,
+            password: prevPassword
+          });
+          if (!reauthErr && reauthData?.session) {
+            const { error: finalUpdErr } = await supabase.auth.updateUser({
+              password: newPassword,
+              data: {
+                must_change_password: false,
+                mustChangePassword: false
+              }
+            });
+            if (!finalUpdErr) {
+              authUpdated = true;
+            } else {
+              throw finalUpdErr;
+            }
+          }
+        } catch (reauthEx) {
+          console.warn("Re-auth attempt note:", reauthEx);
+          throw reauthEx;
+        }
+      }
+    }
+
+    // 2. Update public.profiles table in Supabase (by email AND by id)
+    try {
+      if (cleanEmail) {
+        await supabase
+          .from("profiles")
+          .update({
+            must_change_password: false,
+            updated_at: new Date().toISOString()
+          })
+          .eq("email", cleanEmail);
+      }
+      if (userId && !String(userId).startsWith("local-")) {
+        await supabase
+          .from("profiles")
+          .update({
+            must_change_password: false,
+            updated_at: new Date().toISOString()
+          })
+          .eq("id", userId);
+      }
+    } catch (profErr) {
+      console.warn("Supabase profiles update note:", profErr);
+    }
+  }
+
+  // 3. Save new permanent password to local credentials vault (overwriting old temp password)
+  if (cleanEmail) {
+    saveLocalCredential(cleanEmail, newPassword, {
+      role: userProfile?.role || userProfile?.user_metadata?.role,
+      salonId: userProfile?.salonId || userProfile?.salon_id || userProfile?.user_metadata?.salon_id,
+      mustChangePassword: false
+    });
+  }
+
+  // 4. Update local staff profile record
+  const profiles = getLocalStaffProfiles();
+  const idx = profiles.findIndex(p => (userId && p.id === userId) || (cleanEmail && p.email?.toLowerCase() === cleanEmail));
+  if (idx >= 0) {
+    profiles[idx].must_change_password = false;
+    profiles[idx].mustChangePassword = false;
+    saveLocalStaffProfiles(profiles);
+  }
+
+  // 5. Update local session token if active
+  try {
+    const rawSess = localStorage.getItem(LOCAL_SESSION_KEY);
+    if (rawSess) {
+      const parsed = JSON.parse(rawSess);
+      if (parsed?.user) {
+        parsed.user.user_metadata = {
+          ...(parsed.user.user_metadata || {}),
+          must_change_password: false,
+          mustChangePassword: false
+        };
+        localStorage.setItem(LOCAL_SESSION_KEY, JSON.stringify(parsed));
+      }
+    }
+  } catch {}
+
+  logAuditEvent({
+    action: "PASSWORD_CHANGED",
+    entityType: "auth",
+    entityId: userId || cleanEmail,
+    userEmail: cleanEmail,
+    details: `User ${cleanEmail} updated their permanent password on first login.`
+  }).catch(() => {});
+
+  return { success: true };
+}
+
+export async function provisionOwnerAccount(salonId, ownerEmail, ownerName, tempPassword, actorInfo = null) {
+  return await createStaffUser(
+    ownerEmail,
+    tempPassword,
+    ownerName,
+    actorInfo,
+    salonId,
+    "owner",
+    true
+  );
+}
+
+export async function updateStaffRole(userId, newRole, actorInfo = null, salonId = null, assignedSalons = null) {
   if (supabaseConfigured) {
     try {
       const { data, error } = await supabase.rpc("update_user_role", {
         p_user_id: userId,
-        p_new_role: newRole
+        p_new_role: newRole,
+        p_salon_id: salonId,
+        p_assigned_salons: assignedSalons
       });
-      if (error) throw error;
-      return true;
+      if (!error) return true;
     } catch (err) {
-      // Direct table update fallback
-      const { error: updErr } = await supabase
+      console.warn("update_user_role RPC note, using table update:", err);
+    }
+
+    const payload = {
+      role: newRole,
+      updated_at: new Date().toISOString()
+    };
+    if (salonId) payload.salon_id = salonId;
+    if (assignedSalons) payload.assigned_salons = assignedSalons;
+
+    try {
+      await supabase
         .from("profiles")
-        .update({ role: newRole, updated_at: new Date().toISOString() })
+        .update(payload)
         .eq("id", userId);
-      if (updErr) throw updErr;
-      return true;
+    } catch (updErr) {
+      console.warn("Direct profile update warning (saved locally):", updErr);
     }
   }
 
   // Demo Fallback
   const profiles = getLocalStaffProfiles();
-  const target = profiles.find(p => p.id === userId);
-  if (!target) throw new Error("Staff user not found.");
-  const oldRole = target.role;
-  target.role = newRole;
+  const idx = profiles.findIndex(p => p.id === userId);
+  if (idx >= 0) {
+    profiles[idx].role = newRole;
+    if (salonId) profiles[idx].salon_id = salonId;
+    if (assignedSalons) profiles[idx].assigned_salons = assignedSalons;
+    saveLocalStaffProfiles(profiles);
+
+    logAuditEvent({
+      action: "USER_ROLE_CHANGE",
+      entityType: "user",
+      entityId: userId,
+      userId: actorInfo?.id,
+      userName: actorInfo?.name,
+      userRole: actorInfo?.role,
+      salonId: salonId || "default",
+      newData: { role: newRole, salon_id: salonId },
+      details: `Updated role for ${profiles[idx].full_name || profiles[idx].email} to ${newRole.toUpperCase()}`
+    });
+  }
+
+  return true;
+}
+
+export async function deleteStaffUser(userId, actorInfo = null) {
+  if (!userId) throw new Error("User ID is required.");
+
+  if (supabaseConfigured) {
+    try {
+      await supabase.from("profiles").delete().eq("id", userId);
+    } catch (err) {
+      console.warn("Supabase profile delete warning:", err);
+    }
+  }
+
+  const profiles = getLocalStaffProfiles().filter(p => p.id !== userId);
   saveLocalStaffProfiles(profiles);
 
   logAuditEvent({
-    action: "USER_ROLE_CHANGE",
+    action: "USER_DELETE",
     entityType: "user",
     entityId: userId,
     userId: actorInfo?.id,
-    userEmail: actorInfo?.email,
     userName: actorInfo?.name,
     userRole: actorInfo?.role,
-    oldData: { role: oldRole },
-    newData: { role: newRole },
-    details: `Updated user ${target.email} role from ${oldRole} to ${newRole}`
-  });
+    details: `Removed user account ID: ${userId}`
+  }).catch(() => {});
 
   return true;
 }
 
 // -------------------------------------------------------------
-// Audit Logging System
-// Track if remote audit_logs table exists on Supabase (defaults to false to prevent 404 network console noise)
-let remoteAuditLogsAvailable = false;
-
+// Audit Logging
+// -------------------------------------------------------------
 export async function logAuditEvent({
   action,
-  entityType,
-  entityId,
-  userId,
-  userEmail,
-  userName,
-  userRole,
-  oldData,
-  newData,
-  reason,
-  details
+  entityType = "general",
+  entityId = null,
+  userId = null,
+  userEmail = null,
+  userName = null,
+  userRole = null,
+  oldData = null,
+  newData = null,
+  reason = null,
+  details = null,
+  salonId = "default"
 }) {
-  const eventPayload = {
-    action: String(action || "GENERAL").toUpperCase(),
-    entity_type: String(entityType || "general"),
-    entity_id: entityId ? String(entityId) : null,
-    user_id: userId || null,
-    user_email: userEmail || null,
-    user_name: userName || null,
-    user_role: userRole || null,
-    old_data: oldData ? (typeof oldData === "object" ? oldData : { value: oldData }) : null,
-    new_data: newData ? (typeof newData === "object" ? newData : { value: newData }) : null,
-    reason: reason ? String(reason).trim() : null,
-    details: details ? String(details).trim() : null,
-    created_at: new Date().toISOString()
+  const logObj = {
+    id: "log-" + Date.now() + "-" + Math.floor(Math.random() * 1000),
+    salonId: salonId || "default",
+    salon_id: salonId || "default",
+    action,
+    entityType,
+    entityId: entityId ? String(entityId) : null,
+    userId,
+    userEmail,
+    userName,
+    userRole,
+    oldData,
+    newData,
+    reason,
+    details: details || `${action} on ${entityType}`,
+    createdAt: new Date().toISOString()
   };
 
-  if (supabaseConfigured && remoteAuditLogsAvailable) {
+  if (supabaseConfigured) {
     try {
-      const { error } = await supabase.from("audit_logs").insert([eventPayload]);
-      if (error && (error.code === "PGRST205" || error.code === "42P01" || error.message?.includes("not find the table"))) {
-        remoteAuditLogsAvailable = false;
-      }
-    } catch {
-      remoteAuditLogsAvailable = false;
+      await supabase.from("audit_logs").insert({
+        salon_id: salonId || "default",
+        action,
+        entity_type: entityType,
+        entity_id: entityId ? String(entityId) : null,
+        user_id: userId || null,
+        user_email: userEmail || null,
+        user_name: userName || null,
+        user_role: userRole || null,
+        old_data: oldData ? JSON.parse(JSON.stringify(oldData)) : null,
+        new_data: newData ? JSON.parse(JSON.stringify(newData)) : null,
+        reason,
+        details: details || `${action} on ${entityType}`
+      });
+      return logObj;
+    } catch (err) {
+      console.warn("Supabase audit log insert error:", err);
     }
   }
 
-  // Store in local demo storage for redundancy and instant access
+  // Demo Fallback
   const logs = getLocalAuditLogs();
-  logs.unshift({
-    id: `log-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-    action: eventPayload.action,
-    entityType: eventPayload.entity_type,
-    entityId: eventPayload.entity_id,
-    userId: eventPayload.user_id,
-    userEmail: eventPayload.user_email,
-    userName: eventPayload.user_name,
-    userRole: eventPayload.user_role,
-    oldData: eventPayload.old_data,
-    newData: eventPayload.new_data,
-    reason: eventPayload.reason,
-    details: eventPayload.details,
-    createdAt: eventPayload.created_at
-  });
+  logs.unshift(logObj);
   saveLocalAuditLogs(logs);
+  return logObj;
 }
 
-export async function fetchAuditLogs(filters = {}) {
-  const { action, startDate, endDate, searchQuery, staffUser } = filters;
-
-  if (supabaseConfigured && remoteAuditLogsAvailable) {
+export async function fetchAuditLogs(filters = {}, salonId = null) {
+  if (supabaseConfigured) {
     try {
       let query = supabase
         .from("audit_logs")
         .select("*")
         .order("created_at", { ascending: false })
-        .limit(300);
+        .limit(100);
 
-      if (action && action !== "ALL") {
-        query = query.eq("action", action);
+      if (salonId && salonId !== "all") {
+        query = query.eq("salon_id", salonId);
       }
-      if (startDate) {
-        query = query.gte("created_at", `${startDate}T00:00:00.000Z`);
+      if (filters.action && filters.action !== "ALL") {
+        query = query.eq("action", filters.action);
       }
-      if (endDate) {
-        query = query.lte("created_at", `${endDate}T23:59:59.999Z`);
-      }
-      if (staffUser) {
-        query = query.or(`user_name.ilike.%${staffUser}%,user_email.ilike.%${staffUser}%`);
+      if (filters.entityType && filters.entityType !== "ALL") {
+        query = query.eq("entity_type", filters.entityType);
       }
 
       const { data, error } = await query;
-      if (error) {
-        if (error.code === "PGRST205" || error.code === "42P01" || error.message?.includes("not find the table")) {
-          remoteAuditLogsAvailable = false;
-        }
-      } else if (data && Array.isArray(data) && data.length > 0) {
+      if (!error && Array.isArray(data)) {
         return data.map(l => ({
           id: l.id,
+          salonId: l.salon_id || "default",
           action: l.action,
           entityType: l.entity_type,
           entityId: l.entity_id,
           userId: l.user_id,
           userEmail: l.user_email,
-          userName: l.user_name || "Staff",
-          userRole: l.user_role || "staff",
+          userName: l.user_name,
+          userRole: l.user_role,
           oldData: l.old_data,
           newData: l.new_data,
-          reason: l.reason || "",
-          details: l.details || "",
+          reason: l.reason,
+          details: l.details,
           createdAt: l.created_at
         }));
       }
-    } catch {
-      remoteAuditLogsAvailable = false;
+    } catch (err) {
+      console.warn("fetchAuditLogs Supabase error:", err);
     }
   }
 
-  // Demo Fallback with filters
+  // Demo Fallback
   let logs = getLocalAuditLogs();
-
-  if (action && action !== "ALL") {
-    logs = logs.filter(l => l.action === action);
+  if (salonId && salonId !== "all") {
+    logs = logs.filter(l => (l.salonId || l.salon_id || "default") === salonId);
   }
-  if (startDate) {
-    logs = logs.filter(l => (l.createdAt || "").slice(0, 10) >= startDate);
+  if (filters.action && filters.action !== "ALL") {
+    logs = logs.filter(l => l.action === filters.action);
   }
-  if (endDate) {
-    logs = logs.filter(l => (l.createdAt || "").slice(0, 10) <= endDate);
+  if (filters.entityType && filters.entityType !== "ALL") {
+    logs = logs.filter(l => l.entityType === filters.entityType);
   }
-  if (staffUser) {
-    const s = staffUser.toLowerCase();
-    logs = logs.filter(l => (l.userName || "").toLowerCase().includes(s) || (l.userEmail || "").toLowerCase().includes(s));
-  }
-  if (searchQuery) {
-    const q = searchQuery.toLowerCase();
-    logs = logs.filter(l =>
-      (l.details || "").toLowerCase().includes(q) ||
-      (l.entityId || "").toLowerCase().includes(q) ||
-      (l.reason || "").toLowerCase().includes(q)
-    );
-  }
-
   return logs;
 }
 
 // -------------------------------------------------------------
-// Customer Lookup by Mobile
+// Customers Management (Scoped per Salon)
 // -------------------------------------------------------------
-export async function findCustomerByMobile(rawMobile) {
+export async function findCustomerByMobile(rawMobile, salonId = "default") {
   const norm = normalizeWhatsAppNumber(rawMobile);
-  if (!norm || norm.length < 10) return null;
+  if (!norm) return null;
+  const digits10 = norm.slice(-10);
 
   if (supabaseConfigured) {
-    const digits10 = norm.slice(-10);
+    try {
+      let query = supabase
+        .from("customers")
+        .select("*")
+        .or(`mobile.eq.${digits10},mobile.eq.${norm},mobile.eq.+91${digits10}`);
+
+      if (salonId && salonId !== "all") {
+        query = query.eq("salon_id", salonId);
+      }
+
+      const { data, error } = await query.limit(1).maybeSingle();
+      if (!error && data) {
+        return {
+          id: data.id,
+          salonId: data.salon_id || salonId,
+          name: data.name,
+          mobile: data.mobile,
+          address: data.address || "",
+          whatsapp_opt_in: data.whatsapp_opt_in !== false
+        };
+      }
+    } catch (err) {
+      console.warn("findCustomerByMobile Supabase error:", err);
+    }
+  }
+
+  // Demo Fallback
+  const d = getLocalDemoData();
+  const found = (d.customers || []).find(c => {
+    const isSalonMatch = !salonId || salonId === "all" || (c.salonId || c.salon_id || "default") === salonId;
+    const cNorm = normalizeWhatsAppNumber(c.mobile);
+    return isSalonMatch && (cNorm === norm || cNorm.slice(-10) === digits10);
+  });
+  return found || null;
+}
+
+
+
+// -------------------------------------------------------------
+// Database Auto-Sync Helper for Salon Branches (Foreign Key Resilience)
+// -------------------------------------------------------------
+export async function ensureSalonInDatabase(salonId = "default") {
+  if (!supabaseConfigured || !salonId) return true;
+  const targetId = String(salonId).trim();
+  if (!targetId) return true;
+
+  try {
     const { data, error } = await supabase
-      .from("customers")
-      .select("id, name, mobile, address, whatsapp_opt_in")
-      .or(`mobile.eq.${digits10},mobile.eq.${norm},mobile.eq.91${digits10}`)
-      .limit(1)
+      .from("salons")
+      .select("id")
+      .eq("id", targetId)
       .maybeSingle();
 
-    if (error) {
-      console.error("findCustomerByMobile Supabase query error:", error);
-      return null;
-    }
-    return data;
-  }
-
-  // Demo Fallback
-  const d = getLocalDemoData();
-  const digits10 = norm.slice(-10);
-  return (
-    d.customers.find(
-      c =>
-        normalizeWhatsAppNumber(c.mobile).slice(-10) === digits10
-    ) || null
-  );
-}
-
-// -------------------------------------------------------------
-// Customers Management
-// -------------------------------------------------------------
-export async function fetchCustomers() {
-  if (supabaseConfigured) {
-    const { data: customerRows, error: custErr } = await supabase
-      .from("customers")
-      .select("id, name, mobile, address, whatsapp_opt_in, created_at, updated_at")
-      .order("name", { ascending: true });
-
-    if (custErr) throw custErr;
-
-    // Fetch all invoices to compute customer lifetime stats (excluding VOIDED invoices)
-    let invoiceRows = [];
-    try {
-      const { data: fullRows, error: invErr } = await supabase
-        .from("invoices")
-        .select(`
-          id,
-          customer_id,
-          invoice_number,
-          service_type,
-          product_id,
-          product_name,
-          product_size,
-          quantity,
-          subtotal,
-          discount,
-          total,
-          payment_mode,
-          description,
-          invoice_date,
-          created_at,
-          updated_at,
-          customers ( id, name, mobile, address )
-        `)
-        .order("invoice_date", { ascending: false });
-
-      if (!invErr && fullRows) {
-        invoiceRows = fullRows;
-      }
-    } catch (fullErr) {
-      console.warn("Could not fetch invoices for customer stats calculation:", fullErr);
+    if (!error && data?.id) {
+      return true;
     }
 
-    // Group invoices by customer_id and mobile number (ONLY ACTIVE/NON-VOIDED for financials)
-    const invoicesByCustId = new Map();
-    const invoicesByPhone = new Map();
+    const localSalons = getLocalSalons();
+    const found = localSalons.find(s => s.id === targetId);
 
-    (invoiceRows || []).forEach(inv => {
-      const voidInfo = parseVoidStatus(inv);
-      const isVoid = voidInfo.isVoid;
-      const cust = inv.customers || {};
-      const { items, cleanDescription } = parseItemsFromInvoice(inv.description, inv);
-      const invObj = {
-        id: inv.id,
-        invoiceNumber: inv.invoice_number || `INV-${String(inv.id).slice(0, 6)}`,
-        service: inv.service_type || "Service",
-        items: items,
-        productId: inv.product_id,
-        productName: inv.product_name || "",
-        productSize: inv.product_size || "",
-        quantity: Number(inv.quantity || 1),
-        subtotal: Number(inv.subtotal || inv.total || 0),
-        discount: Number(inv.discount || 0),
-        amount: Number(inv.total || 0),
-        total: Number(inv.total || 0),
-        paymentMode: inv.payment_mode || "Cash",
-        status: voidInfo.status,
-        isVoided: isVoid,
-        description: cleanDescription,
-        createdAt: formatToLocalISODate(inv.invoice_date || inv.created_at)
-      };
+    const fallbackName = targetId === "default"
+      ? "NICE LOOKING (Bandra)"
+      : targetId.replace(/^salon-/, "").replace(/-\w{4,}$/, "").replace(/-/g, " ").toUpperCase() || "Salon Branch";
 
-      if (inv.customer_id) {
-        const cId = String(inv.customer_id);
-        if (!invoicesByCustId.has(cId)) invoicesByCustId.set(cId, []);
-        invoicesByCustId.get(cId).push(invObj);
-      }
-
-      const pDigits = String(cust.mobile || "").replace(/\D/g, "").slice(-10);
-      if (pDigits) {
-        if (!invoicesByPhone.has(pDigits)) invoicesByPhone.set(pDigits, []);
-        invoicesByPhone.get(pDigits).push(invObj);
-      }
-    });
-
-    return (customerRows || []).map(cust => {
-      const cPhone = String(cust.mobile || "").replace(/\D/g, "").slice(-10);
-      const byId = invoicesByCustId.get(String(cust.id)) || [];
-      const byPhone = cPhone ? (invoicesByPhone.get(cPhone) || []) : [];
-
-      const seenIds = new Set();
-      const custInvoices = [];
-      [...byId, ...byPhone].forEach(inv => {
-        if (!seenIds.has(inv.id)) {
-          seenIds.add(inv.id);
-          custInvoices.push(inv);
-        }
-      });
-      custInvoices.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
-
-      // Only count active (non-voided) invoices for spending calculations
-      const activeInvoices = custInvoices.filter(i => !i.isVoided);
-      const totalSpent = activeInvoices.reduce((sum, i) => sum + (Number(i.total || i.amount) || 0), 0);
-      const visitCount = activeInvoices.length;
-      const latest = activeInvoices[0] || custInvoices[0] || null;
-
-      return {
-        id: cust.id,
-        name: cust.name,
-        mobile: cust.mobile,
-        address: cust.address || "",
-        whatsapp_opt_in: cust.whatsapp_opt_in ?? true,
-        visitCount: visitCount,
-        totalSpent: totalSpent,
-        amount: totalSpent,
-        lastVisit: latest ? latest.createdAt : (cust.created_at ? formatToLocalISODate(cust.created_at) : "—"),
-        lastService: latest ? latest.service : (cust.service || "—"),
-        createdAt: cust.created_at ? formatToLocalISODate(cust.created_at) : "—",
-        invoices: custInvoices,
-        hasInvoices: custInvoices.length > 0 || totalSpent > 0
-      };
-    });
-  }
-
-  // Demo Fallback
-  const d = getLocalDemoData();
-  const allInvoices = d.invoices || [];
-
-  return (d.customers || []).map(c => {
-    const p = normalizeWhatsAppNumber(c.mobile).slice(-10);
-    const custInvoices = allInvoices.filter(
-      inv => (inv.customerId && String(inv.customerId) === String(c.id)) ||
-             (normalizeWhatsAppNumber(inv.mobile).slice(-10) === p)
-    ).map(inv => {
-      const { items, cleanDescription } = parseItemsFromInvoice(inv.rawDescription || inv.description, inv);
-      return {
-        ...inv,
-        items,
-        description: cleanDescription,
-        amount: Number(inv.total || inv.amount || 0),
-        total: Number(inv.total || inv.amount || 0),
-        isVoided: Boolean(inv.isVoided || inv.status === "VOIDED")
-      };
-    }).sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
-
-    const activeInvoices = custInvoices.filter(i => !i.isVoided);
-    const totalSpent = activeInvoices.reduce((sum, i) => sum + (Number(i.amount || i.total) || 0), 0);
-    const visitCount = activeInvoices.length;
-    const latest = activeInvoices[0] || custInvoices[0] || null;
-
-    return {
-      ...c,
-      visitCount: visitCount,
-      totalSpent: totalSpent,
-      amount: totalSpent,
-      lastVisit: latest ? latest.createdAt : (c.createdAt || "—"),
-      lastService: latest ? latest.service : (c.service || "—"),
-      createdAt: c.createdAt || formatToLocalISODate(new Date().toISOString()),
-      invoices: custInvoices,
-      hasInvoices: custInvoices.length > 0 || totalSpent > 0
+    const payload = {
+      id: targetId,
+      name: (found?.name || fallbackName).trim(),
+      slug: found?.slug || `salon-${targetId}`,
+      subtitle: (found?.subtitle || "Hair Wig & Hair Services").trim(),
+      invoice_prefix: (found?.invoice_prefix || "NL").toUpperCase().trim(),
+      mobile: (found?.mobile || "+91 98765 43210").trim(),
+      email: (found?.email || "sameershaikh121@proton.me").trim(),
+      address: (found?.address || "Mumbai, Maharashtra").trim(),
+      whatsapp_number: (found?.whatsapp_number || "919876543210").trim(),
+      owner_name: (found?.owner_name || "Salon Owner").trim(),
+      owner_email: (found?.owner_email || "").trim(),
+      status: found?.status || "ACTIVE",
+      created_at: found?.created_at || new Date().toISOString(),
+      updated_at: new Date().toISOString()
     };
-  });
+
+    const { error: upsErr } = await supabase.from("salons").upsert(payload);
+    if (!upsErr) {
+      return true;
+    }
+  } catch (err) {
+    console.warn("ensureSalonInDatabase notice:", err);
+  }
+  return false;
 }
 
-export async function saveCustomer(customerData, actorInfo = null) {
+// -------------------------------------------------------------
+// Customers Management (Scoped per Salon)
+// -------------------------------------------------------------
+
+export async function fetchCustomers(salonId = "default") {
+  let remoteCustomers = null;
+  if (supabaseConfigured) {
+    try {
+      let query = supabase.from("customers").select("*").order("created_at", { ascending: false });
+      if (salonId && salonId !== "all") {
+        query = query.eq("salon_id", salonId);
+      }
+      const { data, error } = await query;
+      if (!error && Array.isArray(data)) {
+        remoteCustomers = data.map(c => ({
+          id: String(c.id),
+          salonId: c.salon_id || salonId,
+          salon_id: c.salon_id || salonId,
+          name: c.name,
+          mobile: c.mobile,
+          address: c.address || "",
+          whatsapp_opt_in: c.whatsapp_opt_in !== false,
+          createdAt: c.created_at
+        }));
+      }
+    } catch (err) {
+      console.warn("fetchCustomers Supabase error:", err);
+    }
+  }
+
+  // Merge remote with local so no customer is lost
+  const d = getLocalDemoData();
+  const rawLocal = (d.customers || []).map(c => ({
+    id: String(c.id),
+    salonId: c.salon_id || c.salonId || "default",
+    salon_id: c.salon_id || c.salonId || "default",
+    name: c.name,
+    mobile: c.mobile,
+    address: c.address || "",
+    whatsapp_opt_in: c.whatsapp_opt_in !== false,
+    createdAt: c.createdAt || c.created_at || new Date().toISOString()
+  }));
+
+  const custMap = new Map();
+  rawLocal.forEach(c => custMap.set(String(c.id), c));
+  if (Array.isArray(remoteCustomers)) {
+    remoteCustomers.forEach(c => custMap.set(String(c.id), c));
+  }
+  let allMerged = Array.from(custMap.values());
+  if (salonId && salonId !== "all") {
+    allMerged = allMerged.filter(c => (c.salonId || c.salon_id || "default") === salonId);
+  }
+
+  // Enrich customer statistics with invoice history
+  try {
+    const allInvoices = await fetchInvoices(salonId);
+    return allMerged.map(c => {
+      const cNorm = normalizeWhatsAppNumber(c.mobile);
+      const c10 = (c.mobile || "").replace(/\D/g, "").slice(-10);
+      const cInvoices = allInvoices.filter(inv => {
+        const inv10 = (inv.mobile || inv.customerMobile || "").replace(/\D/g, "").slice(-10);
+        const invNorm = normalizeWhatsAppNumber(inv.mobile || inv.customerMobile);
+        return (c10 && inv10 && c10 === inv10) || (cNorm && invNorm && cNorm === invNorm) || (inv.customerId && String(inv.customerId) === String(c.id));
+      });
+
+      const validInvs = cInvoices.filter(i => !i.isVoided && i.status !== "VOIDED");
+      const totalSpent = validInvs.reduce((acc, i) => acc + Number(i.total || i.amount || 0), 0);
+      const sortedInvs = [...cInvoices].sort((a, b) => new Date(b.createdAt || b.invoice_date || 0) - new Date(a.createdAt || a.invoice_date || 0));
+      const lastVisit = sortedInvs[0]?.createdAt || c.createdAt || "—";
+      const lastService = sortedInvs[0]?.service || "Hair Wig";
+
+      return {
+        ...c,
+        invoices: sortedInvs,
+        visitCount: cInvoices.length,
+        totalSpent,
+        amount: totalSpent,
+        lastVisit,
+        lastService,
+        hasInvoices: cInvoices.length > 0
+      };
+    });
+  } catch {
+    return allMerged;
+  }
+}
+
+export async function saveCustomer(customerData, actorInfo = null, salonId = "default") {
   const normMobile = normalizeWhatsAppNumber(customerData.mobile);
   if (!normMobile) throw new Error("A valid mobile number is required.");
-  if (!customerData.name || !customerData.name.trim()) throw new Error("Customer name is required.");
-
-  const isEdit = Boolean(customerData.id && String(customerData.id).includes("-"));
+  const effectiveSalonId = salonId || "default";
 
   if (supabaseConfigured) {
-    let result;
-    if (isEdit) {
-      const { data, error } = await supabase
-        .from("customers")
-        .update({
-          name: customerData.name.trim(),
-          mobile: normMobile.slice(-10),
-          address: customerData.address?.trim() || null,
-          whatsapp_opt_in: customerData.whatsapp_opt_in ?? true,
-          updated_at: new Date().toISOString()
-        })
-        .eq("id", customerData.id)
-        .select()
-        .single();
-      if (error) throw error;
-      result = data;
-    } else {
-      const { data, error } = await supabase
-        .from("customers")
-        .upsert(
-          {
-            name: customerData.name.trim(),
-            mobile: normMobile.slice(-10),
-            address: customerData.address?.trim() || null,
-            whatsapp_opt_in: customerData.whatsapp_opt_in ?? true
-          },
-          { onConflict: "mobile" }
-        )
-        .select()
-        .single();
-      if (error) throw error;
-      result = data;
+    await ensureSalonInDatabase(effectiveSalonId);
+  }
+
+  const payload = {
+    salon_id: effectiveSalonId,
+    name: (customerData.name || "").trim(),
+    mobile: normMobile.slice(-10),
+    address: (customerData.address || "").trim(),
+    whatsapp_opt_in: customerData.whatsapp_opt_in !== false,
+    updated_at: new Date().toISOString()
+  };
+
+  let finalSaved = null;
+
+  if (supabaseConfigured) {
+    let savedData = null;
+    let dbError = null;
+
+    try {
+      if (customerData.id && !String(customerData.id).startsWith("cust-")) {
+        const { data, error } = await supabase
+          .from("customers")
+          .update(payload)
+          .eq("id", customerData.id)
+          .select()
+          .maybeSingle();
+
+        if (!error && data) savedData = data;
+        else if (error) dbError = error;
+      } else {
+        // Find existing customer by salon_id and mobile
+        const { data: existing } = await supabase
+          .from("customers")
+          .select("id")
+          .eq("salon_id", effectiveSalonId)
+          .eq("mobile", payload.mobile)
+          .maybeSingle();
+
+        if (existing?.id) {
+          const { data, error } = await supabase
+            .from("customers")
+            .update(payload)
+            .eq("id", existing.id)
+            .select()
+            .maybeSingle();
+
+          if (!error && data) savedData = data;
+          else if (error) dbError = error;
+        } else {
+          const { data, error } = await supabase
+            .from("customers")
+            .insert(payload)
+            .select()
+            .maybeSingle();
+
+          if (!error && data) savedData = data;
+          else if (error) dbError = error;
+        }
+      }
+    } catch (ex) {
+      dbError = ex;
     }
 
-    logAuditEvent({
-      action: isEdit ? "CUSTOMER_UPDATE" : "CUSTOMER_CREATE",
-      entityType: "customer",
-      entityId: result.id,
-      userId: actorInfo?.id,
-      userName: actorInfo?.name,
-      userRole: actorInfo?.role,
-      newData: { name: result.name, mobile: result.mobile },
-      details: `${isEdit ? "Updated" : "Created"} customer profile: ${result.name} (${result.mobile})`
-    });
+    if (dbError && String(dbError.message || dbError).toLowerCase().includes("foreign key")) {
+      try {
+        await ensureSalonInDatabase(effectiveSalonId);
+        const { data: retryData } = await supabase
+          .from("customers")
+          .insert(payload)
+          .select()
+          .maybeSingle();
 
-    return result;
+        if (retryData) {
+          savedData = retryData;
+          dbError = null;
+        }
+      } catch {}
+    }
+
+    if (savedData) {
+      finalSaved = {
+        id: String(savedData.id),
+        salonId: savedData.salon_id || effectiveSalonId,
+        salon_id: savedData.salon_id || effectiveSalonId,
+        name: savedData.name,
+        mobile: savedData.mobile,
+        address: savedData.address,
+        whatsapp_opt_in: savedData.whatsapp_opt_in
+      };
+
+      logAuditEvent({
+        action: customerData.id ? "CUSTOMER_UPDATE" : "CUSTOMER_CREATE",
+        entityType: "customer",
+        entityId: savedData.id,
+        userId: actorInfo?.id,
+        userName: actorInfo?.name,
+        userRole: actorInfo?.role,
+        salonId: effectiveSalonId,
+        newData: payload,
+        details: `${customerData.id ? "Updated" : "Created"} customer record for ${payload.name} (${payload.mobile})`
+      });
+    }
+
+    if (dbError) {
+      console.warn("Supabase customer write note (saved locally):", dbError.message || dbError);
+    }
   }
 
-  // Demo Fallback
+  // Always update local cache so item is instantly visible
   const d = getLocalDemoData();
-  const existingIdx = d.customers.findIndex(
-    c => String(c.id) === String(customerData.id) || normalizeWhatsAppNumber(c.mobile) === normMobile
-  );
-  const updated = {
-    id: customerData.id || String(Date.now()),
-    name: customerData.name.trim(),
-    mobile: normMobile.slice(-10),
-    address: customerData.address || "",
-    whatsapp_opt_in: customerData.whatsapp_opt_in ?? true
+  let savedId = finalSaved?.id || customerData.id || ("cust-" + normMobile.slice(-10));
+  const localCust = {
+    ...payload,
+    id: String(savedId),
+    salonId: effectiveSalonId,
+    salon_id: effectiveSalonId
   };
-  if (existingIdx >= 0) {
-    d.customers[existingIdx] = { ...d.customers[existingIdx], ...updated };
+
+  const idx = (d.customers || []).findIndex(
+    c => String(c.id) === String(savedId) ||
+    ((c.salonId || c.salon_id || "default") === effectiveSalonId && (c.mobile || "").replace(/\D/g, "").slice(-10) === normMobile.slice(-10))
+  );
+  if (idx >= 0) {
+    d.customers[idx] = { ...d.customers[idx], ...localCust };
   } else {
-    d.customers.push(updated);
+    d.customers.unshift(localCust);
   }
   saveLocalDemoData(d);
 
-  logAuditEvent({
-    action: isEdit ? "CUSTOMER_UPDATE" : "CUSTOMER_CREATE",
-    entityType: "customer",
-    entityId: updated.id,
-    userId: actorInfo?.id,
-    userName: actorInfo?.name,
-    userRole: actorInfo?.role,
-    newData: { name: updated.name, mobile: updated.mobile },
-    details: `${isEdit ? "Updated" : "Created"} customer profile: ${updated.name}`
-  });
-
-  return updated;
+  return finalSaved || localCust;
 }
 
-export async function deleteCustomer(customerId, actorInfo = null) {
+export async function deleteCustomer(customerId, actorInfo = null, salonId = "default") {
   if (supabaseConfigured) {
-    const { error } = await supabase
-      .from("customers")
-      .delete()
-      .eq("id", customerId);
-    if (error) throw error;
+    try {
+      await supabase
+        .from("customers")
+        .delete()
+        .eq("id", customerId);
 
-    logAuditEvent({
-      action: "CUSTOMER_DELETE",
-      entityType: "customer",
-      entityId: customerId,
-      userId: actorInfo?.id,
-      userName: actorInfo?.name,
-      userRole: actorInfo?.role,
-      details: `Deleted customer record ID ${customerId}`
-    });
-
-    return true;
+      logAuditEvent({
+        action: "CUSTOMER_DELETE",
+        entityType: "customer",
+        entityId: customerId,
+        userId: actorInfo?.id,
+        userName: actorInfo?.name,
+        userRole: actorInfo?.role,
+        salonId: salonId,
+        details: `Deleted customer ID ${customerId}`
+      });
+    } catch (err) {
+      console.warn("Supabase customer delete warning:", err);
+    }
   }
 
-  // Demo Fallback
+  // Always sync local cache
   const d = getLocalDemoData();
-  d.customers = d.customers.filter(c => String(c.id) !== String(customerId));
+  d.customers = (d.customers || []).filter(c => String(c.id) !== String(customerId));
   saveLocalDemoData(d);
-
-  logAuditEvent({
-    action: "CUSTOMER_DELETE",
-    entityType: "customer",
-    entityId: customerId,
-    userId: actorInfo?.id,
-    userName: actorInfo?.name,
-    userRole: actorInfo?.role,
-    details: `Deleted customer ID ${customerId}`
-  });
-
   return true;
 }
 
 // -------------------------------------------------------------
-// Wig Products Management
+// Products / Wig Inventory (Scoped per Salon)
 // -------------------------------------------------------------
-export async function fetchProducts() {
+export async function fetchProducts(salonId = "default") {
+  let remoteProducts = null;
+
   if (supabaseConfigured) {
-    const { data, error } = await supabase
-      .from("wig_products")
-      .select("*")
-      .eq("active", true)
-      .order("product_name", { ascending: true });
-
-    if (error) throw error;
-
-    return (data || []).map(p => ({
-      id: String(p.id),
-      name: p.product_name || p.name || "Wig Product",
-      type: p.hair_type || "Human Hair",
-      color: p.color || "Natural Black",
-      size: p.size || "5x7",
-      price: Number(p.price || 0),
-      stock: Number(p.stock || 0),
-      description: p.description || "",
-      active: p.active !== false
-    }));
+    try {
+      let query = supabase.from("wig_products").select("*").order("product_name", { ascending: true });
+      if (salonId && salonId !== "all") {
+        query = query.eq("salon_id", salonId);
+      }
+      const { data, error } = await query;
+      if (!error && Array.isArray(data)) {
+        remoteProducts = data.map(p => ({
+          id: String(p.id),
+          salonId: p.salon_id || salonId,
+          salon_id: p.salon_id || salonId,
+          name: p.product_name || p.name || "Wig Product",
+          product_name: p.product_name || p.name || "Wig Product",
+          type: p.hair_type || p.type || "Human Hair",
+          hair_type: p.hair_type || p.type || "Human Hair",
+          color: p.color || "Natural Black",
+          size: p.size || "5x7",
+          price: Number(p.price || 0),
+          stock: Number(p.stock || 0),
+          active: p.active !== false
+        }));
+      }
+    } catch (err) {
+      console.warn("fetchProducts Supabase error:", err);
+    }
   }
 
-  // Demo Fallback
+  // Local / Demo Data
   const d = getLocalDemoData();
-  return (d.products || []).filter(p => p.active !== false).map(p => ({
+  const rawLocal = (d.products || []).map(p => ({
     id: String(p.id),
-    name: p.name || p.product_name || "Wig Product",
-    type: p.type || p.hair_type || "Human Hair",
+    salonId: p.salon_id || p.salonId || "default",
+    salon_id: p.salon_id || p.salonId || "default",
+    name: p.product_name || p.name || "Wig Product",
+    product_name: p.product_name || p.name || "Wig Product",
+    type: p.hair_type || p.type || "Human Hair",
+    hair_type: p.hair_type || p.type || "Human Hair",
     color: p.color || "Natural Black",
     size: p.size || "5x7",
     price: Number(p.price || 0),
     stock: Number(p.stock || 0),
-    description: p.description || "",
-    active: true
+    active: p.active !== false
   }));
+
+  // Merge remote and local so newly added products are never lost
+  const prodMap = new Map();
+  rawLocal.forEach(p => prodMap.set(String(p.id), p));
+  if (Array.isArray(remoteProducts)) {
+    remoteProducts.forEach(p => prodMap.set(String(p.id), p));
+  }
+
+  const allMerged = Array.from(prodMap.values());
+
+  if (salonId && salonId !== "all") {
+    return allMerged.filter(p => (p.salonId || p.salon_id || "default") === salonId);
+  }
+  return allMerged;
 }
 
-export async function saveProduct(product, actorInfo = null) {
-  const name = String(product.name || product.product_name || "").trim();
-  if (!name) throw new Error("Product name is required.");
-  const size = String(product.size || "").trim() || "5x7";
-  const price = Math.max(0, Number(product.price || 0));
-  const stock = Math.max(0, Number(product.stock || 0));
-  const hair_type = product.type || product.hair_type || "Human Hair";
-  const color = String(product.color || "Natural Black").trim() || "Natural Black";
-  const description = String(product.description || "").trim();
-  const isEdit = Boolean(product.id && (String(product.id).includes("-") || !isNaN(Number(product.id))));
+export async function saveProduct(product, actorInfo = null, salonId = "default") {
+  const isNew = !product.id;
+  const effectiveSalonId = salonId || "default";
+
+  // Auto-sync the salon to database before creating products
+  if (supabaseConfigured) {
+    await ensureSalonInDatabase(effectiveSalonId);
+  }
+
+  const productName = (product.name || product.product_name || "Wig Product").trim();
+  const hairType = product.type || product.hair_type || "Human Hair";
+  const color = product.color || "Natural Black";
+  const size = product.size || "5x7";
+  const price = Number(product.price || 0);
+  const stock = Number(product.stock || 0);
+  const active = product.active !== false;
+
+  // DB Payload (only include columns that exist in the PostgreSQL table public.wig_products)
+  const dbPayload = {
+    salon_id: effectiveSalonId,
+    product_name: productName,
+    hair_type: hairType,
+    color: color,
+    size: size,
+    price: price,
+    stock: stock,
+    active: active,
+    updated_at: new Date().toISOString()
+  };
+
+  let finalSaved = null;
 
   if (supabaseConfigured) {
-    const payload = {
-      product_name: name,
-      hair_type,
-      color,
-      size,
-      price,
-      stock,
-      active: true,
-      updated_at: new Date().toISOString()
-    };
-    if (description) {
-      payload.description = description;
-    }
+    let savedData = null;
+    let dbError = null;
 
-    let savedData;
     try {
-      if (isEdit) {
+      if (isNew) {
         const { data, error } = await supabase
           .from("wig_products")
-          .update(payload)
-          .eq("id", product.id)
+          .insert(dbPayload)
           .select()
-          .single();
-        if (error) throw error;
-        savedData = data;
-      } else {
-        const { data, error } = await supabase
-          .from("wig_products")
-          .insert(payload)
-          .select()
-          .single();
-        if (error) throw error;
-        savedData = data;
-      }
-    } catch (err) {
-      // If error is about description column not existing in table, retry without description
-      if (payload.description && (String(err?.message || "").includes("description") || String(err?.details || "").includes("description"))) {
-        delete payload.description;
-        if (isEdit) {
-          const { data, error } = await supabase
-            .from("wig_products")
-            .update(payload)
-            .eq("id", product.id)
-            .select()
-            .single();
-          if (error) throw error;
-          savedData = data;
+          .maybeSingle();
+
+        if (error) {
+          dbError = error;
         } else {
-          const { data, error } = await supabase
-            .from("wig_products")
-            .insert(payload)
-            .select()
-            .single();
-          if (error) throw error;
           savedData = data;
         }
       } else {
-        throw err;
+        const { data, error } = await supabase
+          .from("wig_products")
+          .update(dbPayload)
+          .eq("id", product.id)
+          .select()
+          .maybeSingle();
+
+        if (error) {
+          dbError = error;
+        } else {
+          savedData = data;
+        }
+      }
+    } catch (ex) {
+      dbError = ex;
+    }
+
+    // If foreign key constraint failed, ensure salon in DB and retry once
+    if (dbError && String(dbError.message || dbError).toLowerCase().includes("foreign key")) {
+      try {
+        await ensureSalonInDatabase(effectiveSalonId);
+        if (isNew) {
+          const retryRes = await supabase
+            .from("wig_products")
+            .insert(dbPayload)
+            .select()
+            .maybeSingle();
+
+          if (!retryRes.error && retryRes.data) {
+            savedData = retryRes.data;
+            dbError = null;
+          }
+        } else {
+          const retryRes = await supabase
+            .from("wig_products")
+            .update(dbPayload)
+            .eq("id", product.id)
+            .select()
+            .maybeSingle();
+
+          if (!retryRes.error && retryRes.data) {
+            savedData = retryRes.data;
+            dbError = null;
+          }
+        }
+      } catch (retryEx) {
+        console.warn("Wig product retry exception:", retryEx);
       }
     }
 
-    logAuditEvent({
-      action: isEdit ? "PRODUCT_UPDATE" : "PRODUCT_CREATE",
-      entityType: "wig_product",
-      entityId: savedData.id,
-      userId: actorInfo?.id,
-      userName: actorInfo?.name,
-      userRole: actorInfo?.role,
-      newData: { name: savedData.product_name, size: savedData.size, stock: savedData.stock, price: savedData.price },
-      details: `${isEdit ? "Updated" : "Added"} wig product: ${savedData.product_name} (${savedData.size}) — Stock: ${savedData.stock}`
-    });
+    if (savedData) {
+      finalSaved = {
+        id: String(savedData.id),
+        salonId: savedData.salon_id || effectiveSalonId,
+        salon_id: savedData.salon_id || effectiveSalonId,
+        name: savedData.product_name,
+        product_name: savedData.product_name,
+        type: savedData.hair_type || "Human Hair",
+        hair_type: savedData.hair_type || "Human Hair",
+        color: savedData.color || "Natural Black",
+        size: savedData.size || "5x7",
+        price: Number(savedData.price || 0),
+        stock: Number(savedData.stock || 0),
+        active: savedData.active !== false
+      };
 
-    return {
-      id: String(savedData.id),
-      name: savedData.product_name || savedData.name || name,
-      type: savedData.hair_type || hair_type,
-      color: savedData.color || color,
-      size: savedData.size || size,
-      price: Number(savedData.price || price),
-      stock: Number(savedData.stock || stock),
-      description: savedData.description || description || "",
-      active: savedData.active !== false
-    };
+      logAuditEvent({
+        action: isNew ? "PRODUCT_CREATE" : "PRODUCT_UPDATE",
+        entityType: "wig_product",
+        entityId: savedData.id,
+        userId: actorInfo?.id,
+        userName: actorInfo?.name,
+        userRole: actorInfo?.role,
+        salonId: effectiveSalonId,
+        newData: dbPayload,
+        details: `${isNew ? "Added new" : "Updated"} wig product "${productName}" (Stock: ${stock})`
+      });
+    }
+
+    if (dbError) {
+      console.warn("Supabase wig product write warning (saved locally):", dbError.message || dbError);
+    }
   }
 
-  // Demo Fallback
+  // Always sync to local cache immediately so the product is guaranteed to display
   const d = getLocalDemoData();
-  const saved = {
-    id: isEdit ? String(product.id) : String(Date.now()),
-    name,
-    type: hair_type,
-    color,
-    size,
-    price,
-    stock,
-    description,
-    active: true
+  let savedId = product.id ? String(product.id) : (finalSaved?.id || ("prod-" + Date.now()));
+  const localProd = {
+    id: savedId,
+    salonId: effectiveSalonId,
+    salon_id: effectiveSalonId,
+    name: productName,
+    product_name: productName,
+    type: hairType,
+    hair_type: hairType,
+    color: color,
+    size: size,
+    price: price,
+    stock: stock,
+    active: active,
+    updated_at: new Date().toISOString()
   };
 
-  if (isEdit) {
-    d.products = (d.products || []).map(p => (String(p.id) === String(product.id) ? saved : p));
+  const pIdx = (d.products || []).findIndex(p => String(p.id) === String(savedId));
+  if (pIdx >= 0) {
+    d.products[pIdx] = { ...d.products[pIdx], ...localProd };
   } else {
-    d.products = [...(d.products || []), saved];
+    d.products.unshift(localProd);
   }
   saveLocalDemoData(d);
 
-  logAuditEvent({
-    action: isEdit ? "PRODUCT_UPDATE" : "PRODUCT_CREATE",
-    entityType: "wig_product",
-    entityId: saved.id,
-    userId: actorInfo?.id,
-    userName: actorInfo?.name,
-    userRole: actorInfo?.role,
-    newData: { name: saved.name, size: saved.size, stock: saved.stock, price: saved.price },
-    details: `${isEdit ? "Updated" : "Added"} wig product: ${saved.name} (Stock: ${saved.stock})`
-  });
-
-  return saved;
+  return finalSaved || localProd;
 }
 
-export async function deleteProduct(productId, actorInfo = null) {
+export async function deleteProduct(productId, actorInfo = null, salonId = "default") {
   if (supabaseConfigured) {
-    const { error } = await supabase
-      .from("wig_products")
-      .update({ active: false, updated_at: new Date().toISOString() })
-      .eq("id", productId);
-    if (error) throw error;
+    try {
+      await supabase
+        .from("wig_products")
+        .delete()
+        .eq("id", productId);
 
-    logAuditEvent({
-      action: "PRODUCT_DELETE",
-      entityType: "wig_product",
-      entityId: productId,
-      userId: actorInfo?.id,
-      userName: actorInfo?.name,
-      userRole: actorInfo?.role,
-      details: `Deactivated wig product ID ${productId}`
-    });
-
-    return true;
+      logAuditEvent({
+        action: "PRODUCT_DELETE",
+        entityType: "wig_product",
+        entityId: productId,
+        userId: actorInfo?.id,
+        userName: actorInfo?.name,
+        userRole: actorInfo?.role,
+        salonId: salonId,
+        details: `Deleted wig product ID ${productId}`
+      });
+    } catch (err) {
+      console.warn("Supabase product delete warning:", err);
+    }
   }
 
-  // Demo Fallback
+  // Always sync local cache
   const d = getLocalDemoData();
   d.products = (d.products || []).filter(p => String(p.id) !== String(productId));
   saveLocalDemoData(d);
-
-  logAuditEvent({
-    action: "PRODUCT_DELETE",
-    entityType: "wig_product",
-    entityId: productId,
-    userId: actorInfo?.id,
-    userName: actorInfo?.name,
-    userRole: actorInfo?.role,
-    details: `Deactivated wig product ID ${productId}`
-  });
-
   return true;
 }
 
 // -------------------------------------------------------------
-// Invoices Management & Multi-Item Line Operations
+// Invoices Management (Multi-Tenant & Atomic Stock)
 // -------------------------------------------------------------
 export function parseVoidStatus(inv) {
-  const rawDesc = String(inv?.rawDescription || inv?.description || "");
-  const isVoid = Boolean(
+  const isVoid =
+    inv?.status === "VOIDED" ||
     inv?.is_voided === true ||
     inv?.isVoided === true ||
-    inv?.status === "VOIDED" ||
-    rawDesc.includes("---VOIDED---")
-  );
-
-  let voidReason = inv?.void_reason || inv?.voidReason || "";
-  let voidedByName = inv?.voided_by_name || inv?.voidedByName || "";
-  let voidedAt = inv?.voided_at || inv?.voidedAt || null;
-
-  if (isVoid && rawDesc.includes("---VOIDED---")) {
-    const match = rawDesc.match(/---VOIDED---\s*(?:Reason:\s*([^(\n]+))?(?:\s*\(by\s*([^)]+)\))?/i);
-    if (match) {
-      if (!voidReason && match[1]) voidReason = match[1].trim();
-      if (!voidedByName && match[2]) voidedByName = match[2].trim();
-    }
-  }
+    Boolean(inv?.voidedAt || inv?.voided_at || inv?.voidReason || inv?.void_reason);
 
   return {
     isVoid,
-    status: isVoid ? "VOIDED" : (inv?.status || "PAID"),
-    voidReason,
-    voidedByName,
-    voidedAt: voidedAt ? formatToLocalISODate(voidedAt) : (isVoid ? formatToLocalISODate(new Date().toISOString()) : null),
-    rawVoidedAt: voidedAt || null
+    voidReason: inv?.voidReason || inv?.void_reason || (isVoid ? "Invoice Voided" : ""),
+    voidedAt: inv?.voidedAt || inv?.voided_at || "",
+    voidedByName: inv?.voidedByName || inv?.voided_by_name || "Staff"
   };
 }
 
 function parseItemsFromInvoice(rawDesc, invRecord) {
-  let items = null;
-  let cleanDesc = rawDesc || "";
-  let settingsSnapshot = null;
+  let items = [];
+  let userNote = "";
 
-  if (rawDesc && typeof rawDesc === "string") {
-    let textToParse = rawDesc;
-    if (textToParse.includes("---SETTINGS_JSON---")) {
-      const parts = textToParse.split("---SETTINGS_JSON---");
-      try {
-        settingsSnapshot = JSON.parse(parts[1].trim());
-      } catch (e) {
-        console.warn("Failed to parse settings snapshot from description JSON:", e);
+  if (rawDesc && typeof rawDesc === "string" && rawDesc.includes("---ITEMS_JSON---")) {
+    const parts = rawDesc.split("---ITEMS_JSON---");
+    userNote = parts[0]?.trim() || "";
+    try {
+      const parsed = JSON.parse(parts[1]?.trim() || "[]");
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        items = parsed;
       }
-      textToParse = parts[0];
-    }
-
-    if (textToParse.includes("---ITEMS_JSON---")) {
-      const parts = textToParse.split("---ITEMS_JSON---");
-      cleanDesc = parts[0].trim();
-      try {
-        items = JSON.parse(parts[1].trim());
-      } catch (e) {
-        console.warn("Failed to parse line items from description JSON:", e);
-      }
-    } else {
-      cleanDesc = textToParse.trim();
-    }
-    // Clean void markers from cleanDesc for neat UI / print invoice display
-    cleanDesc = cleanDesc.replace(/---VOIDED---[^\n]*\n?/g, "").trim();
-  } else if (invRecord && Array.isArray(invRecord.items) && invRecord.items.length > 0) {
-    items = invRecord.items;
+    } catch {}
   }
 
-  if (!Array.isArray(items) || items.length === 0) {
-    const svc = invRecord?.service_type || invRecord?.service || "Hair Wig";
-    const isWig = svc === "Hair Wig";
-    const prodId = invRecord?.product_id || invRecord?.productId || null;
-    const prodName = invRecord?.product_name || invRecord?.productName || "";
-    const prodSize = invRecord?.product_size || invRecord?.productSize || "";
-    const qty = Number(invRecord?.quantity || (isWig ? 1 : 1));
-    const sub = Number(invRecord?.subtotal || invRecord?.amount || invRecord?.total || 0);
-
+  if (!items.length && invRecord) {
     items = [
       {
-        id: "item-legacy-1",
-        service: svc,
-        productId: prodId,
-        productName: prodName,
-        productSize: prodSize,
-        quantity: qty > 0 ? qty : 1,
-        unitPrice: qty > 0 ? Math.round(sub / qty) : sub,
-        amount: sub,
-        note: ""
+        id: "item-fallback-1",
+        service: invRecord.service_type || invRecord.service || "Hair Wig",
+        productId: invRecord.product_id || invRecord.productId || null,
+        productName: invRecord.product_name || invRecord.productName || "",
+        productSize: invRecord.product_size || invRecord.productSize || "",
+        quantity: Number(invRecord.quantity || (invRecord.service_type === "Hair Wig" ? 1 : 0)),
+        amount: Number(invRecord.total || invRecord.amount || 0)
       }
     ];
   }
 
-  return { items, cleanDescription: cleanDesc, settingsSnapshot };
+  return { items, userNote };
 }
 
-export async function fetchInvoices() {
+export async function fetchInvoices(salonId = "default") {
+  let remoteInvoices = null;
+
   if (supabaseConfigured) {
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from("invoices")
         .select(`
-          id,
-          invoice_number,
-          customer_id,
-          transaction_id,
-          service_type,
-          product_id,
-          product_name,
-          product_size,
-          quantity,
-          subtotal,
-          discount,
-          total,
-          payment_mode,
-          description,
-          invoice_date,
-          created_at,
-          updated_at,
-          customers ( id, name, mobile, address )
+          *,
+          customers:customer_id (id, name, mobile, address),
+          transactions:transaction_id (id, amount, payment_mode, payment_status, is_voided)
         `)
-        .order("invoice_date", { ascending: false });
+        .order("invoice_date", { ascending: false })
+        .order("created_at", { ascending: false });
 
-      if (error) throw error;
+      if (salonId && salonId !== "all") {
+        query = query.eq("salon_id", salonId);
+      }
 
-      if (data) {
-        return data.map(i => {
-          const voidInfo = parseVoidStatus(i);
-          const cust = i.customers || {};
-          const { items, cleanDescription, settingsSnapshot } = parseItemsFromInvoice(i.description, i);
+      const { data, error } = await query;
+      if (!error && Array.isArray(data)) {
+        remoteInvoices = data.map(inv => {
+          const { items, userNote } = parseItemsFromInvoice(inv.description, inv);
+          const voidInfo = parseVoidStatus(inv);
+
+          let subtotal = Number(inv.subtotal || 0);
+          let total = Number(inv.total || inv.amount || 0);
+          if (total === 0 && Array.isArray(items) && items.length > 0) {
+            const itemsSum = items.reduce((s, it) => s + (Number(it.amount) || (Number(it.unitPrice || 0) * Math.max(1, Number(it.quantity || 1)))), 0);
+            if (itemsSum > 0) {
+              subtotal = itemsSum;
+              total = Math.max(0, subtotal - Number(inv.discount || 0));
+            }
+          }
+
           return {
-            id: i.id,
-            invoiceNumber: i.invoice_number,
-            customerId: i.customer_id,
-            transactionId: i.transaction_id,
-            name: cust.name || i.product_name || "Valued Customer",
-            mobile: cust.mobile || "",
-            address: cust.address || "",
-            service: i.service_type || "Hair Wig",
-            items: items,
-            productId: i.product_id,
-            productName: i.product_name || "",
-            productSize: i.product_size || "",
-            quantity: Number(i.quantity || 0),
-            subtotal: Number(i.subtotal || i.total || 0),
-            discount: Number(i.discount || 0),
-            amount: Number(i.total || 0),
-            total: Number(i.total || 0),
-            paymentMode: i.payment_mode || "Cash",
-            status: voidInfo.status,
+            id: String(inv.id),
+            salonId: inv.salon_id || salonId,
+            salon_id: inv.salon_id || salonId,
+            invoiceNumber: inv.invoice_number,
+            customerId: inv.customer_id,
+            customerName: inv.customers?.name || "Customer",
+            customerMobile: inv.customers?.mobile || "",
+            name: inv.customers?.name || "Customer",
+            mobile: inv.customers?.mobile || "",
+            address: inv.customers?.address || "",
+            service: inv.service_type || "Hair Wig",
+            productId: inv.product_id,
+            productName: inv.product_name || "",
+            productSize: inv.product_size || "",
+            quantity: Number(inv.quantity || 0),
+            subtotal,
+            discount: Number(inv.discount || 0),
+            total,
+            amount: total,
+            paymentMode: inv.payment_mode || "Cash",
+            status: voidInfo.isVoid ? "VOIDED" : (inv.status || "PAID"),
             isVoided: voidInfo.isVoid,
-            voidedAt: voidInfo.voidedAt,
-            rawVoidedAt: voidInfo.rawVoidedAt,
             voidReason: voidInfo.voidReason,
+            voidedAt: voidInfo.voidedAt,
             voidedByName: voidInfo.voidedByName,
-            description: cleanDescription,
-            rawDescription: i.description || "",
-            shopSettings: settingsSnapshot || null,
-            createdAt: formatToLocalISODate(i.invoice_date || i.created_at),
-            rawCreatedAt: i.invoice_date || i.created_at
+            description: userNote || inv.description || "",
+            rawDescription: inv.description || "",
+            items,
+            createdAt: formatToLocalISODate(inv.invoice_date || inv.created_at),
+            rawCreatedAt: inv.invoice_date || inv.created_at
           };
         });
       }
     } catch (err) {
-      console.error("fetchInvoices error:", err);
-      throw err;
+      console.warn("fetchInvoices Supabase error:", err);
     }
   }
 
-  // Demo Fallback
+  // Local / Demo Data
   const d = getLocalDemoData();
-  return (d.invoices || []).map(i => {
-    const voidInfo = parseVoidStatus(i);
-    const { items, cleanDescription, settingsSnapshot } = parseItemsFromInvoice(i.rawDescription || i.description, i);
+  const rawLocal = (d.invoices || []).map(inv => {
+    const { items, userNote } = parseItemsFromInvoice(inv.rawDescription || inv.description, inv);
+    const voidInfo = parseVoidStatus(inv);
+
+    let subtotal = Number(inv.subtotal || 0);
+    let total = Number(inv.total || inv.amount || 0);
+    if (total === 0 && Array.isArray(items) && items.length > 0) {
+      const itemsSum = items.reduce((s, it) => s + (Number(it.amount) || (Number(it.unitPrice || 0) * Math.max(1, Number(it.quantity || 1)))), 0);
+      if (itemsSum > 0) {
+        subtotal = itemsSum;
+        total = Math.max(0, subtotal - Number(inv.discount || 0));
+      }
+    }
+
     return {
-      ...i,
-      items: items,
-      subtotal: Number(i.subtotal || i.amount || 0),
-      discount: Number(i.discount || 0),
-      amount: Number(i.amount || 0),
-      total: Number(i.amount || 0),
-      quantity: Number(i.quantity || (i.service === "Hair Wig" ? 1 : 0)),
-      status: voidInfo.status,
+      ...inv,
+      id: String(inv.id),
+      salonId: inv.salonId || inv.salon_id || "default",
+      salon_id: inv.salonId || inv.salon_id || "default",
+      subtotal,
+      total,
+      amount: total,
+      items,
+      description: userNote || inv.description || "",
       isVoided: voidInfo.isVoid,
-      voidedAt: voidInfo.voidedAt || i.voidedAt || null,
-      voidReason: voidInfo.voidReason || i.voidReason || "",
-      voidedByName: voidInfo.voidedByName || i.voidedByName || "",
-      description: cleanDescription,
-      shopSettings: settingsSnapshot || i.shopSettings || null,
-      createdAt: i.createdAt || getMumbaiTodayISO()
+      status: voidInfo.isVoid ? "VOIDED" : (inv.status || "PAID"),
+      voidReason: voidInfo.voidReason,
+      createdAt: formatToLocalISODate(inv.createdAt || inv.invoice_date || new Date().toISOString())
     };
   });
-}
 
-export async function getNextInvoiceNumber(prefix = "NL") {
-  const cleanPrefix = (prefix || "NL").trim().toUpperCase() || "NL";
-
-  if (supabaseConfigured) {
-    try {
-      const { data, error } = await supabase
-        .from("invoices")
-        .select("invoice_number")
-        .ilike("invoice_number", `${cleanPrefix}-%`)
-        .order("created_at", { ascending: false })
-        .limit(100);
-
-      if (!error && data && data.length > 0) {
-        let maxSeq = 0;
-        for (const row of data) {
-          const numStr = String(row.invoice_number || "").trim();
-          const parts = numStr.split("-");
-          const lastChunk = parts[parts.length - 1];
-          const seq = parseInt(lastChunk, 10);
-          if (!isNaN(seq) && seq > maxSeq) {
-            maxSeq = seq;
-          }
-        }
-        const nextSeq = maxSeq + 1;
-        return `${cleanPrefix}-${String(nextSeq).padStart(4, "0")}`;
-      } else if (!error) {
-        return `${cleanPrefix}-0001`;
-      }
-    } catch (err) {
-      console.warn("Could not query supabase for next invoice sequence:", err);
-    }
+  // Merge remote and local so newly created invoices are NEVER lost
+  const invMap = new Map();
+  rawLocal.forEach(inv => invMap.set(String(inv.id), inv));
+  if (Array.isArray(remoteInvoices)) {
+    remoteInvoices.forEach(inv => invMap.set(String(inv.id), inv));
   }
 
-  // Demo Fallback / LocalStorage
-  try {
-    const d = getLocalDemoData();
-    const invs = d.invoices || [];
-    let maxSeq = 0;
-    for (const inv of invs) {
-      const numStr = String(inv.invoiceNumber || inv.invoice_number || "").trim();
-      if (numStr.toUpperCase().startsWith(`${cleanPrefix}-`)) {
-        const parts = numStr.split("-");
-        const lastChunk = parts[parts.length - 1];
-        const seq = parseInt(lastChunk, 10);
-        if (!isNaN(seq) && seq > maxSeq) {
-          maxSeq = seq;
-        }
-      }
-    }
-    const nextSeq = maxSeq + 1;
-    return `${cleanPrefix}-${String(nextSeq).padStart(4, "0")}`;
-  } catch {
-    return `${cleanPrefix}-0001`;
+  const allMerged = Array.from(invMap.values());
+
+  if (salonId && salonId !== "all") {
+    return allMerged.filter(i => (i.salonId || i.salon_id || "default") === salonId);
   }
+  return allMerged;
 }
 
-/**
- * Creates invoice supporting multiple service/product line items, itemized subtotals,
- * atomic stock deductions, and audit logging.
- */
-export async function createInvoice(form, lineItems, actorInfo = null) {
+export async function createInvoice(form, lineItems, actorInfo = null, salonId = "default") {
   const normMobile = normalizeWhatsAppNumber(form.mobile);
   if (!normMobile) throw new Error("A valid mobile number is required.");
   if (!form.name || !form.name.trim()) throw new Error("Customer name is required.");
 
-  // Fetch latest business profile settings dynamically
-  const settings = await fetchSettings();
-  const prefix = (settings.invoice_prefix || "NL").trim().toUpperCase() || "NL";
-  const invoiceNumber = await getNextInvoiceNumber(prefix);
+  const effectiveSalonId = salonId || "default";
 
-  const businessSnapshot = {
-    shop_name: settings.shop_name || "NICE LOOKING",
-    shop_subtitle: settings.shop_subtitle || "Hair Wig & Hair Services",
-    shop_mobile: settings.shop_mobile || settings.whatsapp_number || "",
-    shop_address: settings.shop_address || "",
-    whatsapp_number: settings.whatsapp_number || settings.shop_mobile || "",
-    invoice_prefix: prefix
-  };
+  // Auto-sync salon in DB before creating invoice
+  if (supabaseConfigured) {
+    await ensureSalonInDatabase(effectiveSalonId);
+  }
 
-  const items = Array.isArray(lineItems) && lineItems.length > 0
-    ? lineItems
-    : (Array.isArray(form.items) && form.items.length > 0
-      ? form.items
-      : [
-          {
-            id: "item-1",
-            service: form.service || "Hair Wig",
-            productId: form.service === "Hair Wig" ? form.productId : null,
-            productName: form.productName || "",
-            productSize: form.productSize || "",
-            quantity: form.service === "Hair Wig" ? Math.max(1, Number(form.quantity || 1)) : 1,
-            unitPrice: Number(form.amount || 0),
-            amount: Number(form.amount || 0),
-            note: ""
-          }
-        ]);
+  // 1. Guaranteed Customer creation/update
+  let savedCustomer = null;
+  try {
+    savedCustomer = await saveCustomer({
+      name: form.name.trim(),
+      mobile: normMobile,
+      address: form.address?.trim() || "",
+      whatsapp_opt_in: form.whatsapp !== false
+    }, actorInfo, effectiveSalonId);
+  } catch (custErr) {
+    console.warn("Customer save note in createInvoice:", custErr);
+  }
 
-  let subtotal = 0;
-  const processedItems = items.map((it, idx) => {
+  const rawActiveItems = Array.isArray(lineItems) && lineItems.length > 0 ? lineItems : (
+    Array.isArray(form.items) && form.items.length > 0 ? form.items : [
+      {
+        service: form.service || "Hair Wig",
+        productId: form.productId || null,
+        productName: form.productName || "",
+        productSize: form.productSize || "",
+        quantity: Number(form.quantity || 1),
+        unitPrice: Number(form.unitPrice || form.total || form.amount || 0),
+        amount: Number(form.total || form.amount || 0)
+      }
+    ]
+  );
+
+  const activeItems = rawActiveItems.map(it => {
     const qty = Math.max(1, Number(it.quantity || 1));
-    const unitPrice = Math.max(0, Number(it.unitPrice ?? it.price ?? it.amount ?? 0));
-    const itemAmount = Math.max(0, Number(it.amount ?? (unitPrice * qty)));
-    subtotal += itemAmount;
+    const uPrice = Number(it.unitPrice || 0);
+    const lineAmt = it.amount !== undefined && it.amount !== "" && !isNaN(Number(it.amount))
+      ? Number(it.amount)
+      : (uPrice * qty);
     return {
-      id: it.id || `item-${idx + 1}-${Date.now()}`,
-      service: it.service || "Hair Wig",
-      productId: it.service === "Hair Wig" ? it.productId || null : null,
-      productName: it.productName || "",
-      productSize: it.productSize || "",
+      ...it,
       quantity: qty,
-      unitPrice,
-      amount: itemAmount,
-      note: it.note || ""
+      unitPrice: uPrice,
+      amount: lineAmt
     };
   });
 
+  const primaryItem = activeItems[0] || {};
+  const primaryService = primaryItem.service || "Hair Wig";
+  const isUuid = (val) => typeof val === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val);
+  const primaryProductId = (primaryService === "Hair Wig" && isUuid(primaryItem.productId)) ? primaryItem.productId : null;
+  const primaryQty = primaryService === "Hair Wig" ? Number(primaryItem.quantity || 1) : 0;
+
+  const computedSubtotal = activeItems.reduce((sum, it) => sum + Number(it.amount || 0), 0);
+  const subtotal = Math.max(0, Number(form.subtotal !== undefined && form.subtotal !== "" && !isNaN(Number(form.subtotal)) ? form.subtotal : computedSubtotal));
   const discount = Math.max(0, Number(form.discount || 0));
-  const total = Math.max(0, subtotal - discount);
-  const nowISO = new Date().toISOString();
+  const total = Math.max(0, Number(form.total !== undefined && form.total !== "" && !isNaN(Number(form.total)) ? form.total : Math.max(0, subtotal - discount)));
 
-  const uniqueServices = [...new Set(processedItems.map(i => i.service).filter(Boolean))];
-  const serviceSummary = uniqueServices.length > 0 ? uniqueServices.join(", ") : "Hair Service";
-  const primaryWigItem = processedItems.find(i => i.service === "Hair Wig" && i.productId) || null;
+  const fullDescriptionPayload = `${form.description || ""}\n---ITEMS_JSON---\n${JSON.stringify(activeItems)}`.trim();
 
-  const userNotes = (form.description || "").trim();
-  const descWithPayload = userNotes
-    ? `${userNotes}\n---ITEMS_JSON---\n${JSON.stringify(processedItems)}\n---SETTINGS_JSON---\n${JSON.stringify(businessSnapshot)}`
-    : `---ITEMS_JSON---\n${JSON.stringify(processedItems)}\n---SETTINGS_JSON---\n${JSON.stringify(businessSnapshot)}`;
+  // Dynamically resolve salon's configured invoice prefix
+  let effectivePrefix = (form.invoicePrefix || "").trim().toUpperCase();
+  if (!effectivePrefix) {
+    const salons = getLocalSalons();
+    const matchedSalon = salons.find(s => s.id === effectiveSalonId);
+    if (matchedSalon?.invoice_prefix) {
+      effectivePrefix = matchedSalon.invoice_prefix.trim().toUpperCase();
+    }
+  }
+  if (!effectivePrefix) {
+    effectivePrefix = "NL";
+  }
+
+  const nextNumber = form.invoiceNumber || `${effectivePrefix}-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
+  const invoiceDateISO = form.invoiceDate ? new Date(form.invoiceDate).toISOString() : new Date().toISOString();
+
+  let finalSavedInv = null;
 
   if (supabaseConfigured) {
-    // 1. Decrement stock for all wig items
-    for (const wigItem of processedItems) {
-      if (wigItem.service === "Hair Wig" && wigItem.productId) {
+    let rpcSuccess = false;
+    try {
+      const rpcParams = {
+        p_customer_name: form.name.trim(),
+        p_customer_mobile: normMobile.slice(-10),
+        p_customer_address: form.address?.trim() || "",
+        p_service_type: primaryService,
+        p_product_id: primaryProductId,
+        p_quantity: primaryQty,
+        p_subtotal: subtotal,
+        p_discount: discount,
+        p_total: total,
+        p_payment_mode: form.paymentMode || "Cash",
+        p_description: fullDescriptionPayload,
+        p_invoice_number: nextNumber,
+        p_invoice_date: invoiceDateISO,
+        p_salon_id: effectiveSalonId
+      };
+
+      const { data, error } = await supabase.rpc("create_invoice_with_stock", rpcParams);
+      if (!error && data) {
+        rpcSuccess = true;
+        finalSavedInv = {
+          ...data,
+          id: String(data.id),
+          invoiceNumber: data.invoice_number || nextNumber,
+          invoice_number: data.invoice_number || nextNumber,
+          salonId: data.salon_id || effectiveSalonId,
+          salon_id: data.salon_id || effectiveSalonId,
+          name: form.name.trim(),
+          customerName: form.name.trim(),
+          mobile: normMobile.slice(-10),
+          customerMobile: normMobile.slice(-10),
+          address: form.address || "",
+          subtotal: subtotal,
+          discount: discount,
+          amount: total,
+          total: total,
+          paymentMode: form.paymentMode || "Cash",
+          items: activeItems,
+          createdAt: formatToLocalISODate(invoiceDateISO)
+        };
+      } else if (error) {
+        console.warn("create_invoice_with_stock RPC note (running direct table write):", error.message);
+      }
+    } catch (rpcErr) {
+      console.warn("create_invoice_with_stock RPC exception:", rpcErr);
+    }
+
+    // 2. Direct Supabase write fallback
+    if (!finalSavedInv) {
+      try {
+        let txnId = null;
         try {
-          await supabase.rpc("decrement_product_stock", {
-            p_product_id: wigItem.productId,
-            p_quantity: wigItem.quantity
-          });
-        } catch (stockErr) {
-          console.error("Stock decrement error for wig:", wigItem.productName, stockErr);
-          throw new Error(stockErr.message || `Insufficient stock for ${wigItem.productName || "wig product"}.`);
+          const { data: txnData } = await supabase
+            .from("transactions")
+            .insert({
+              salon_id: effectiveSalonId,
+              customer_id: savedCustomer?.id || null,
+              amount: total,
+              discount: discount,
+              payment_mode: form.paymentMode || "Cash",
+              payment_status: "SUCCESS",
+              is_voided: false,
+              created_at: invoiceDateISO
+            })
+            .select()
+            .maybeSingle();
+          if (txnData?.id) txnId = txnData.id;
+        } catch (txnErr) {
+          console.warn("Direct transaction insert note:", txnErr);
+        }
+
+        const invPayload = {
+          salon_id: effectiveSalonId,
+          customer_id: savedCustomer?.id || null,
+          transaction_id: txnId,
+          invoice_number: nextNumber,
+          service_type: primaryService,
+          product_id: primaryProductId,
+          quantity: primaryQty,
+          subtotal,
+          discount,
+          total,
+          payment_mode: form.paymentMode || "Cash",
+          description: fullDescriptionPayload,
+          invoice_date: invoiceDateISO,
+          status: "PAID",
+          is_voided: false,
+          created_at: invoiceDateISO,
+          updated_at: new Date().toISOString()
+        };
+
+        const { data: invData, error: invErr } = await supabase
+          .from("invoices")
+          .insert(invPayload)
+          .select()
+          .maybeSingle();
+
+        if (!invErr && invData) {
+          finalSavedInv = {
+            ...invData,
+            id: String(invData.id),
+            invoiceNumber: invData.invoice_number || nextNumber,
+            invoice_number: invData.invoice_number || nextNumber,
+            salonId: invData.salon_id || effectiveSalonId,
+            salon_id: invData.salon_id || effectiveSalonId,
+            name: form.name.trim(),
+            customerName: form.name.trim(),
+            mobile: normMobile.slice(-10),
+            customerMobile: normMobile.slice(-10),
+            address: form.address || "",
+            subtotal: subtotal,
+            discount: discount,
+            amount: total,
+            total: total,
+            paymentMode: form.paymentMode || "Cash",
+            items: activeItems,
+            createdAt: formatToLocalISODate(invoiceDateISO)
+          };
+        }
+      } catch (directInvErr) {
+        console.warn("Direct invoice insert error (saved locally):", directInvErr);
+      }
+    }
+
+    // 3. Guaranteed stock deduction for all wig line items in Supabase
+    const itemsToDeduct = rpcSuccess ? activeItems.slice(1) : activeItems;
+    for (const item of itemsToDeduct) {
+      if (item.service === "Hair Wig" && item.productId) {
+        try {
+          if (isUuid(item.productId)) {
+            await supabase.rpc("deduct_wig_stock", {
+              p_product_id: item.productId,
+              p_quantity: Number(item.quantity || 1)
+            });
+          } else {
+            const { data: currentP } = await supabase
+              .from("wig_products")
+              .select("stock")
+              .eq("id", item.productId)
+              .maybeSingle();
+            if (currentP) {
+              const newStock = Math.max(0, Number(currentP.stock || 0) - Number(item.quantity || 1));
+              await supabase
+                .from("wig_products")
+                .update({ stock: newStock, updated_at: new Date().toISOString() })
+                .eq("id", item.productId);
+            }
+          }
+        } catch (stkErr) {
+          console.warn("Stock deduction warning in invoice save:", stkErr);
         }
       }
     }
-
-    // 2. Upsert customer
-    const digits10 = normMobile.slice(-10);
-    let customerId = null;
-    const { data: existingCust } = await supabase
-      .from("customers")
-      .select("id")
-      .eq("mobile", digits10)
-      .maybeSingle();
-
-    if (existingCust && existingCust.id) {
-      customerId = existingCust.id;
-      await supabase
-        .from("customers")
-        .update({
-          name: form.name.trim(),
-          address: form.address?.trim() || null,
-          updated_at: nowISO
-        })
-        .eq("id", customerId);
-    } else {
-      const { data: newCust, error: newCustErr } = await supabase
-        .from("customers")
-        .insert({
-          name: form.name.trim(),
-          mobile: digits10,
-          address: form.address?.trim() || "",
-          whatsapp_opt_in: true
-        })
-        .select("id")
-        .single();
-      if (newCustErr) throw newCustErr;
-      customerId = newCust.id;
-    }
-
-    // 3. Create Transaction (matches actual database schema)
-    const txnPayload = {
-      customer_id: customerId,
-      service_type: serviceSummary,
-      product_id: primaryWigItem?.productId || null,
-      quantity: primaryWigItem?.quantity || 0,
-      amount: total,
-      discount: discount,
-      payment_mode: form.paymentMode || "Cash",
-      payment_status: "PAID",
-      description: descWithPayload,
-      service_date: nowISO,
-      created_by: actorInfo?.id || null
-    };
-
-    let txn = null;
-    const { data: txnData, error: txnErr } = await supabase
-      .from("transactions")
-      .insert(txnPayload)
-      .select("id")
-      .single();
-
-    if (!txnErr && txnData) {
-      txn = txnData;
-    } else if (txnErr) {
-      // Retry without created_by if needed
-      const { data: retryTxn } = await supabase
-        .from("transactions")
-        .insert({
-          customer_id: customerId,
-          service_type: serviceSummary,
-          product_id: primaryWigItem?.productId || null,
-          quantity: primaryWigItem?.quantity || 0,
-          amount: total,
-          discount: discount,
-          payment_mode: form.paymentMode || "Cash",
-          payment_status: "PAID",
-          description: descWithPayload,
-          service_date: nowISO
-        })
-        .select("id")
-        .single();
-      txn = retryTxn;
-    }
-
-    // 4. Create Invoice (matches actual database schema)
-    const invPayload = {
-      invoice_number: invoiceNumber,
-      customer_id: customerId,
-      transaction_id: txn?.id || null,
-      service_type: serviceSummary,
-      product_id: primaryWigItem?.productId || null,
-      product_name: primaryWigItem?.productName || null,
-      product_size: primaryWigItem?.productSize || null,
-      quantity: primaryWigItem?.quantity || 0,
-      subtotal: subtotal,
-      discount: discount,
-      total: total,
-      payment_mode: form.paymentMode || "Cash",
-      description: descWithPayload,
-      invoice_date: nowISO
-    };
-
-    const { data: invData, error: invErr } = await supabase
-      .from("invoices")
-      .insert(invPayload)
-      .select()
-      .single();
-
-    if (invErr) {
-      console.error("Invoice insert error:", invErr);
-      throw new Error(invErr.message || "Failed to create invoice.");
-    }
-    const inv = invData;
-
-    logAuditEvent({
-      action: "INVOICE_CREATE",
-      entityType: "invoice",
-      entityId: inv.id,
-      userId: actorInfo?.id,
-      userName: actorInfo?.name,
-      userRole: actorInfo?.role,
-      newData: { invoice_number: invoiceNumber, total, customer_name: form.name, service: serviceSummary },
-      details: `Created Invoice #${invoiceNumber} for ₹${total.toLocaleString("en-IN")}`
-    });
-
-    return {
-      id: inv.id,
-      invoiceNumber: inv.invoice_number,
-      customerId: customerId,
-      name: form.name.trim(),
-      mobile: digits10,
-      address: form.address?.trim() || "",
-      service: serviceSummary,
-      items: processedItems,
-      productId: primaryWigItem?.productId || null,
-      productName: primaryWigItem?.productName || "",
-      productSize: primaryWigItem?.productSize || "",
-      quantity: primaryWigItem?.quantity || 0,
-      subtotal: subtotal,
-      discount: discount,
-      amount: total,
-      total: total,
-      paymentMode: form.paymentMode || "Cash",
-      status: "PAID",
-      isVoided: false,
-      description: userNotes,
-      shopSettings: businessSnapshot,
-      createdAt: formatToLocalISODate(nowISO)
-    };
   }
 
-  // Demo Fallback (LocalStorage)
+  // 3. Always sync to LocalStorage demo data immediately
   const d = getLocalDemoData();
 
-  for (const wigItem of processedItems) {
-    if (wigItem.service === "Hair Wig" && wigItem.productId) {
-      const prod = (d.products || []).find(p => String(p.id) === String(wigItem.productId));
-      if (!prod) throw new Error(`Wig product "${wigItem.productName || "Product"}" not found.`);
-      if (Number(prod.stock || 0) < wigItem.quantity) {
-        throw new Error(`Insufficient stock for ${prod.name || "wig"}: only ${prod.stock} unit(s) available.`);
+  // Deduct stock locally
+  activeItems.forEach(item => {
+    if (item.service === "Hair Wig" && item.productId) {
+      const prod = (d.products || []).find(p => String(p.id) === String(item.productId));
+      if (prod) {
+        prod.stock = Math.max(0, Number(prod.stock || 0) - Number(item.quantity || 1));
       }
-      prod.stock = Math.max(0, Number(prod.stock || 0) - wigItem.quantity);
     }
-  }
+  });
 
-  const digits10 = normMobile.slice(-10);
-  let cust = (d.customers || []).find(c => normalizeWhatsAppNumber(c.mobile).slice(-10) === digits10);
-  if (cust) {
-    cust.name = form.name.trim();
-    cust.address = form.address || cust.address;
+  // Guarantee customer in local storage
+  const custId = savedCustomer?.id || ("cust-" + normMobile.slice(-10));
+  const localCustObj = {
+    id: String(custId),
+    salonId: effectiveSalonId,
+    salon_id: effectiveSalonId,
+    name: form.name.trim(),
+    mobile: normMobile.slice(-10),
+    address: form.address?.trim() || "",
+    whatsapp_opt_in: form.whatsapp !== false,
+    createdAt: formatToLocalISODate(invoiceDateISO)
+  };
+  const cIdx = (d.customers || []).findIndex(
+    c => String(c.id) === String(custId) ||
+    ((c.salonId || c.salon_id || "default") === effectiveSalonId && (c.mobile || "").replace(/\D/g, "").slice(-10) === normMobile.slice(-10))
+  );
+  if (cIdx >= 0) {
+    d.customers[cIdx] = { ...d.customers[cIdx], ...localCustObj };
   } else {
-    cust = {
-      id: String(Date.now()),
-      name: form.name.trim(),
-      mobile: digits10,
-      address: form.address || "",
-      whatsapp_opt_in: true
-    };
-    d.customers.push(cust);
+    d.customers.unshift(localCustObj);
   }
 
-  const createdInv = {
-    id: `inv-${Date.now()}`,
-    invoiceNumber,
-    customerId: cust.id,
-    name: cust.name,
-    mobile: cust.mobile,
-    address: cust.address,
-    service: serviceSummary,
-    items: processedItems,
-    productId: primaryWigItem?.productId || null,
-    productName: primaryWigItem?.productName || "",
-    productSize: primaryWigItem?.productSize || "",
-    quantity: primaryWigItem?.quantity || 0,
-    subtotal: subtotal,
-    discount: discount,
+  const localInv = {
+    id: finalSavedInv?.id || ("inv-" + Date.now()),
+    salonId: effectiveSalonId,
+    salon_id: effectiveSalonId,
+    invoiceNumber: nextNumber,
+    customerId: String(custId),
+    name: form.name.trim(),
+    customerName: form.name.trim(),
+    mobile: normMobile.slice(-10),
+    customerMobile: normMobile.slice(-10),
+    address: form.address || "",
+    service: primaryService,
+    productId: primaryProductId,
+    productName: primaryItem.productName || "",
+    productSize: primaryItem.productSize || "",
+    quantity: primaryQty,
+    subtotal,
+    discount,
     amount: total,
-    total: total,
+    total,
     paymentMode: form.paymentMode || "Cash",
     status: "PAID",
     isVoided: false,
-    description: userNotes,
-    rawDescription: descWithPayload,
-    shopSettings: businessSnapshot,
-    createdAt: getMumbaiTodayISO()
+    description: form.description || "",
+    rawDescription: fullDescriptionPayload,
+    items: activeItems,
+    createdAt: formatToLocalISODate(invoiceDateISO),
+    invoice_date: invoiceDateISO
   };
 
-  d.invoices = [...(d.invoices || []), createdInv];
+  const invIdx = (d.invoices || []).findIndex(i => String(i.id) === String(localInv.id));
+  if (invIdx >= 0) {
+    d.invoices[invIdx] = { ...d.invoices[invIdx], ...localInv };
+  } else {
+    d.invoices.unshift(localInv);
+  }
   saveLocalDemoData(d);
 
   logAuditEvent({
     action: "INVOICE_CREATE",
     entityType: "invoice",
-    entityId: createdInv.id,
+    entityId: localInv.id,
     userId: actorInfo?.id,
     userName: actorInfo?.name,
     userRole: actorInfo?.role,
-    newData: { invoice_number: invoiceNumber, total, customer_name: form.name },
-    details: `Created Invoice #${invoiceNumber} for ₹${total.toLocaleString("en-IN")}`
+    salonId: effectiveSalonId,
+    newData: { invoice_number: localInv.invoiceNumber, total: localInv.total, customer_name: localInv.name },
+    details: `Created Invoice #${localInv.invoiceNumber} for ₹${localInv.total.toLocaleString("en-IN")}`
   });
 
-  return createdInv;
+  return finalSavedInv || localInv;
 }
 
-/**
- * Voids an invoice safely with confirmation and mandatory reason.
- * Restores wig inventory stock exactly once and records an immutable audit trail.
- */
-export async function voidInvoice(invoiceId, reason, actorInfo = null) {
+export async function voidInvoice(invoiceId, reason, actorInfo = null, salonId = "default") {
   const cleanReason = String(reason || "").trim();
-  if (!cleanReason) {
-    throw new Error("A mandatory reason is required to void an invoice.");
-  }
+  if (!cleanReason) throw new Error("A mandatory void reason is required.");
 
-  if (supabaseConfigured) {
-    // 1. Try atomic PostgreSQL RPC if deployed
+  const isUuid = (val) => typeof val === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val);
+
+  if (supabaseConfigured && isUuid(invoiceId)) {
     try {
       const { data, error } = await supabase.rpc("void_invoice", {
         p_invoice_id: invoiceId,
-        p_reason: cleanReason
+        p_reason: cleanReason,
+        p_salon_id: salonId
       });
-
-      if (!error && data) {
-        return data;
-      }
-      if (error) {
-        console.warn("void_invoice RPC not available or failed, applying direct table void fallback:", error.message);
-      }
+      if (!error && data) return data;
+      if (error) console.warn("void_invoice RPC failed, updating directly:", error.message);
     } catch (rpcErr) {
-      console.warn("void_invoice RPC exception, applying fallback:", rpcErr);
+      console.warn("void_invoice RPC exception:", rpcErr);
     }
 
-    // 2. Resilient Direct-Table Fallback
-    // A. Fetch current invoice record
-    const { data: currentInv, error: fetchErr } = await supabase
-      .from("invoices")
-      .select("*")
-      .eq("id", invoiceId)
-      .maybeSingle();
-
-    if (fetchErr || !currentInv) {
-      throw new Error(fetchErr?.message || "Invoice not found in database.");
-    }
-
-    const voidCheck = parseVoidStatus(currentInv);
-    if (voidCheck.isVoid) {
-      throw new Error("Invoice is already voided.");
-    }
-
-    // B. Restore wig stock if applicable
-    let stockRestored = false;
-    const { items } = parseItemsFromInvoice(currentInv.description, currentInv);
-    for (const item of items) {
-      if (item.service === "Hair Wig" && item.productId && Number(item.quantity || 0) > 0) {
-        try {
-          const { data: prod } = await supabase
-            .from("wig_products")
-            .select("id, stock")
-            .eq("id", item.productId)
-            .maybeSingle();
-
-          if (prod) {
-            await supabase
-              .from("wig_products")
-              .update({ stock: Number(prod.stock || 0) + Number(item.quantity || 0), updated_at: new Date().toISOString() })
-              .eq("id", item.productId);
-            stockRestored = true;
-          }
-        } catch (stkErr) {
-          console.warn("Failed to restore wig stock on void fallback:", stkErr);
-        }
-      }
-    }
-
-    if (!stockRestored && (currentInv.service_type === "Hair Wig" || String(currentInv.service_type || "").includes("Hair Wig")) && currentInv.product_id && Number(currentInv.quantity || 0) > 0) {
-      try {
-        const { data: prod } = await supabase
-          .from("wig_products")
-          .select("id, stock")
-          .eq("id", currentInv.product_id)
-          .maybeSingle();
-
-        if (prod) {
-          await supabase
-            .from("wig_products")
-            .update({ stock: Number(prod.stock || 0) + Number(currentInv.quantity || 0), updated_at: new Date().toISOString() })
-            .eq("id", currentInv.product_id);
-        }
-      } catch (stkErr) {
-        console.warn("Failed to restore direct wig product stock:", stkErr);
-      }
-    }
-
-    // C. Mark invoice as VOIDED using description marker
-    const nowIso = new Date().toISOString();
-    const existingDesc = String(currentInv.description || "");
-    const voidMarker = `---VOIDED--- Reason: ${cleanReason} (by ${actorInfo?.name || "Staff"})`;
-    const newDesc = existingDesc.includes("---VOIDED---")
-      ? existingDesc
-      : existingDesc ? `${voidMarker}\n${existingDesc}` : voidMarker;
-
-    const { error: descErr } = await supabase
-      .from("invoices")
-      .update({
-        description: newDesc,
-        updated_at: nowIso
-      })
-      .eq("id", invoiceId);
-
-    if (descErr) {
-      // Retry without updated_at if needed
-      const { error: fbDescErr } = await supabase
+    try {
+      const { error: updErr } = await supabase
         .from("invoices")
         .update({
-          description: newDesc
+          status: "VOIDED",
+          is_voided: true,
+          voided_at: new Date().toISOString(),
+          void_reason: cleanReason,
+          voided_by_name: actorInfo?.name || "Staff",
+          updated_at: new Date().toISOString()
         })
         .eq("id", invoiceId);
 
-      if (fbDescErr) {
-        throw new Error(fbDescErr.message || "Failed to mark invoice as VOIDED.");
+      if (updErr) console.warn("Supabase direct void update notice:", updErr.message);
+
+      logAuditEvent({
+        action: "INVOICE_VOID",
+        entityType: "invoice",
+        entityId: invoiceId,
+        userId: actorInfo?.id,
+        userName: actorInfo?.name,
+        userRole: actorInfo?.role,
+        salonId: salonId,
+        reason: cleanReason,
+        details: `Voided Invoice ID ${invoiceId}. Reason: ${cleanReason}`
+      }).catch(() => {});
+    } catch (dbErr) {
+      console.warn("Supabase void update exception:", dbErr);
+    }
+  }
+
+  // Always update Local Demo Data as well
+  const d = getLocalDemoData();
+  const targetIdx = (d.invoices || []).findIndex(i => String(i.id) === String(invoiceId));
+  if (targetIdx >= 0) {
+    const inv = d.invoices[targetIdx];
+    const { items } = parseItemsFromInvoice(inv.rawDescription || inv.description, inv);
+    for (const item of items) {
+      if (item.service === "Hair Wig" && item.productId && Number(item.quantity || 0) > 0) {
+        const prod = (d.products || []).find(p => String(p.id) === String(item.productId));
+        if (prod) {
+          prod.stock = Number(prod.stock || 0) + Number(item.quantity || 0);
+        }
       }
     }
 
-    // D. Mark linked transaction as VOIDED
-    if (currentInv.transaction_id) {
-      try {
-        await supabase
-          .from("transactions")
-          .update({
-            payment_status: "VOIDED",
-            updated_at: nowIso
-          })
-          .eq("id", currentInv.transaction_id);
-      } catch {
-        try {
-          await supabase
-            .from("transactions")
-            .update({
-              payment_status: "VOIDED"
-            })
-            .eq("id", currentInv.transaction_id);
-        } catch {}
-      }
-    }
+    const voidedInv = {
+      ...inv,
+      status: "VOIDED",
+      isVoided: true,
+      voidReason: cleanReason,
+      voidedAt: formatToLocalISODate(new Date().toISOString()),
+      voidedByName: actorInfo?.name || "Staff"
+    };
 
-    // E. Log immutable audit event
-    await logAuditEvent({
+    d.invoices[targetIdx] = voidedInv;
+    saveLocalDemoData(d);
+
+    logAuditEvent({
       action: "INVOICE_VOID",
       entityType: "invoice",
       entityId: invoiceId,
       userId: actorInfo?.id,
       userName: actorInfo?.name,
       userRole: actorInfo?.role,
-      oldData: { invoice_number: currentInv.invoice_number, total: currentInv.total },
-      newData: { status: "VOIDED", is_voided: true, void_reason: cleanReason },
+      salonId: salonId,
       reason: cleanReason,
-      details: `Voided Invoice #${currentInv.invoice_number}. Reason: ${cleanReason}`
-    });
+      details: `Voided Invoice #${inv.invoiceNumber || invoiceId}. Reason: ${cleanReason}`
+    }).catch(() => {});
 
-    return {
-      id: invoiceId,
-      invoice_number: currentInv.invoice_number,
-      status: "VOIDED",
-      is_voided: true,
-      isVoided: true,
-      void_reason: cleanReason,
-      voidReason: cleanReason,
-      voided_at: nowIso,
-      voidedAt: formatToLocalISODate(nowIso),
-      voided_by_name: actorInfo?.name || "Staff",
-      voidedByName: actorInfo?.name || "Staff",
-      amount: currentInv.total,
-      total: currentInv.total
-    };
+    return voidedInv;
   }
 
-  // Demo Fallback (LocalStorage)
-  const d = getLocalDemoData();
-  const targetIdx = (d.invoices || []).findIndex(i => String(i.id) === String(invoiceId));
-  if (targetIdx < 0) throw new Error("Invoice not found.");
-  const inv = d.invoices[targetIdx];
-
-  const localVoidCheck = parseVoidStatus(inv);
-  if (localVoidCheck.isVoid) {
-    throw new Error("Invoice is already voided.");
-  }
-
-  // Restore stock for wig products in line items exactly once
-  const { items } = parseItemsFromInvoice(inv.rawDescription || inv.description, inv);
-  for (const item of items) {
-    if (item.service === "Hair Wig" && item.productId && Number(item.quantity || 0) > 0) {
-      const prod = (d.products || []).find(p => String(p.id) === String(item.productId));
-      if (prod) {
-        prod.stock = Number(prod.stock || 0) + Number(item.quantity || 0);
-      }
-    }
-  }
-
-  const now = new Date().toISOString();
-  const voidedInv = {
-    ...inv,
-    status: "VOIDED",
-    isVoided: true,
-    is_voided: true,
-    voidedAt: formatToLocalISODate(now),
-    voided_at: now,
-    voidReason: cleanReason,
-    void_reason: cleanReason,
-    voidedByName: actorInfo?.name || "Staff",
-    voided_by_name: actorInfo?.name || "Staff"
-  };
-
-  d.invoices[targetIdx] = voidedInv;
-  saveLocalDemoData(d);
-
-  logAuditEvent({
-    action: "INVOICE_VOID",
-    entityType: "invoice",
-    entityId: invoiceId,
-    userId: actorInfo?.id,
-    userName: actorInfo?.name,
-    userRole: actorInfo?.role,
-    oldData: { invoice_number: inv.invoiceNumber, total: inv.total || inv.amount },
-    newData: { status: "VOIDED", reason: cleanReason },
-    reason: cleanReason,
-    details: `Voided Invoice #${inv.invoiceNumber}. Reason: ${cleanReason}`
-  });
-
-  return voidedInv;
+  return { id: invoiceId, status: "VOIDED", is_voided: true, void_reason: cleanReason };
 }
 
-/**
- * Updates invoice atomically (Owner/Admin Only).
- * Adjusts wig stock safely at database level and records old vs new audit diff.
- */
-export async function updateInvoice(updatedData, selectedProduct, actorInfo = null) {
+export async function updateInvoice(updatedData, selectedProduct, actorInfo = null, salonId = "default") {
   const normMobile = normalizeWhatsAppNumber(updatedData.mobile);
   if (!normMobile) throw new Error("A valid mobile number is required.");
-  if (!updatedData.name || !updatedData.name.trim()) throw new Error("Customer name is required.");
 
   const isHairWig = updatedData.service === "Hair Wig";
-  const validProductId = isHairWig && updatedData.productId && String(updatedData.productId).trim() !== ""
-    ? String(updatedData.productId).trim()
-    : null;
-
-  if (isHairWig && !validProductId) {
-    throw new Error("Please select a valid Wig Product.");
-  }
-
+  const validProductId = isHairWig && updatedData.productId ? String(updatedData.productId).trim() : null;
   const qty = isHairWig ? Math.max(1, Number(updatedData.quantity || 1)) : 0;
   const subtotal = Math.max(0, Number(updatedData.subtotal ?? updatedData.amount ?? 0));
   const discount = Math.max(0, Number(updatedData.discount || 0));
-  const total = Math.max(0, Number(updatedData.total !== undefined && updatedData.total !== null && !isNaN(Number(updatedData.total)) ? updatedData.total : (subtotal - discount)));
+  const total = Math.max(0, Number(updatedData.total !== undefined ? updatedData.total : (subtotal - discount)));
 
-  if (supabaseConfigured) {
+  const isUuid = (val) => typeof val === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val);
+
+  if (supabaseConfigured && isUuid(updatedData.id)) {
     try {
       const rpcParams = {
         p_invoice_id: updatedData.id,
@@ -2188,300 +2737,260 @@ export async function updateInvoice(updatedData, selectedProduct, actorInfo = nu
         p_total: total,
         p_payment_mode: updatedData.paymentMode || "Cash",
         p_description: updatedData.description?.trim() || "",
-        p_invoice_date: updatedData.rawCreatedAt || updatedData.invoice_date || null
+        p_invoice_date: updatedData.rawCreatedAt || updatedData.invoice_date || null,
+        p_salon_id: salonId || "default"
       };
 
       const { data, error } = await supabase.rpc("update_invoice_with_stock", rpcParams);
       if (!error && data) return data;
-      if (error) console.warn("update_invoice_with_stock RPC failed, applying direct table update fallback:", error.message);
     } catch (rpcErr) {
       console.warn("update_invoice_with_stock exception:", rpcErr);
     }
-
-    // Direct table update matching schema columns
-    const { error: updErr } = await supabase
-      .from("invoices")
-      .update({
-        service_type: updatedData.service,
-        product_id: validProductId,
-        product_name: isHairWig ? (selectedProduct?.name || "") : null,
-        product_size: isHairWig ? (selectedProduct?.size || "") : null,
-        quantity: qty,
-        subtotal: subtotal,
-        discount: discount,
-        total: total,
-        payment_mode: updatedData.paymentMode || "Cash",
-        description: updatedData.description?.trim() || "",
-        updated_at: new Date().toISOString()
-      })
-      .eq("id", updatedData.id);
-
-    if (updErr) throw updErr;
-
-    logAuditEvent({
-      action: "INVOICE_EDIT",
-      entityType: "invoice",
-      entityId: updatedData.id,
-      userId: actorInfo?.id,
-      userName: actorInfo?.name,
-      userRole: actorInfo?.role,
-      newData: { total: total, service: updatedData.service, paymentMode: updatedData.paymentMode },
-      details: `Updated Invoice #${updatedData.invoiceNumber || updatedData.id} (Total: ₹${total.toLocaleString("en-IN")})`
-    });
-
-    return updatedData;
   }
 
-  // Demo Fallback (LocalStorage)
+  // Always update LocalStorage demo data
   const d = getLocalDemoData();
   const oldInvIdx = (d.invoices || []).findIndex(i => String(i.id) === String(updatedData.id));
-  if (oldInvIdx < 0) throw new Error("Invoice not found.");
-  const oldInv = d.invoices[oldInvIdx];
+  if (oldInvIdx >= 0) {
+    const oldInv = d.invoices[oldInvIdx];
+    const saved = {
+      ...oldInv,
+      name: updatedData.name.trim(),
+      mobile: normMobile.slice(-10),
+      address: updatedData.address || "",
+      service: updatedData.service,
+      productId: validProductId,
+      productName: isHairWig ? selectedProduct?.name || oldInv.productName : "",
+      productSize: isHairWig ? selectedProduct?.size || oldInv.productSize : "",
+      quantity: qty,
+      subtotal,
+      discount,
+      amount: total,
+      total,
+      paymentMode: updatedData.paymentMode,
+      description: updatedData.description || ""
+    };
 
-  if (isHairWig && validProductId) {
-    const newProd = (d.products || []).find(p => String(p.id) === String(validProductId));
-    if (!newProd) throw new Error("Selected wig product not found.");
-
-    if (String(oldInv.productId) === String(validProductId)) {
-      const delta = qty - Number(oldInv.quantity || 0);
-      if (delta > 0 && Number(newProd.stock || 0) < delta) {
-        throw new Error(`Insufficient stock: only ${newProd.stock} additional unit(s) available.`);
-      }
-      newProd.stock = Math.max(0, Number(newProd.stock || 0) - delta);
-    } else {
-      if (oldInv.productId) {
-        const oldProd = (d.products || []).find(p => String(p.id) === String(oldInv.productId));
-        if (oldProd) oldProd.stock = Number(oldProd.stock || 0) + Number(oldInv.quantity || 0);
-      }
-      if (Number(newProd.stock || 0) < qty) {
-        throw new Error(`Insufficient stock: only ${newProd.stock} unit(s) available.`);
-      }
-      newProd.stock = Math.max(0, Number(newProd.stock || 0) - qty);
-    }
-  } else if (oldInv.productId) {
-    const oldProd = (d.products || []).find(p => String(p.id) === String(oldInv.productId));
-    if (oldProd) oldProd.stock = Number(oldProd.stock || 0) + Number(oldInv.quantity || 0);
+    d.invoices[oldInvIdx] = saved;
+    saveLocalDemoData(d);
+    return saved;
   }
 
-  const saved = {
-    ...oldInv,
-    name: updatedData.name.trim(),
-    mobile: normMobile.slice(-10),
-    address: updatedData.address || "",
-    service: updatedData.service,
-    productId: isHairWig ? validProductId : null,
-    productName: isHairWig ? selectedProduct?.name || oldInv.productName : "",
-    productSize: isHairWig ? selectedProduct?.size || oldInv.productSize : "",
-    quantity: qty,
-    subtotal,
-    discount,
-    amount: total,
-    total,
-    paymentMode: updatedData.paymentMode,
-    description: updatedData.description || ""
-  };
-
-  d.invoices[oldInvIdx] = saved;
-  saveLocalDemoData(d);
-
-  logAuditEvent({
-    action: "INVOICE_EDIT",
-    entityType: "invoice",
-    entityId: updatedData.id,
-    userId: actorInfo?.id,
-    userName: actorInfo?.name,
-    userRole: actorInfo?.role,
-    oldData: { total: oldInv.total || oldInv.amount, service: oldInv.service, paymentMode: oldInv.paymentMode },
-    newData: { total: total, service: updatedData.service, paymentMode: updatedData.paymentMode },
-    details: `Updated Invoice #${oldInv.invoiceNumber} (Total: ₹${total.toLocaleString("en-IN")})`
-  });
-
-  return saved;
+  return updatedData;
 }
 
-/**
- * Permanently deletes invoice (Admin/Owner Only).
- */
-export async function deleteInvoice(invoiceId, actorInfo = null) {
-  if (supabaseConfigured) {
+export async function deleteInvoice(invoiceId, actorInfo = null, salonId = "default") {
+  const isUuid = (val) => typeof val === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val);
+
+  if (supabaseConfigured && isUuid(invoiceId)) {
     try {
       const { error } = await supabase.rpc("delete_invoice_with_stock", {
         p_invoice_id: invoiceId
       });
-      if (!error) return true;
-      console.warn("delete_invoice_with_stock RPC failed, applying direct table delete fallback:", error.message);
+      if (!error) {
+        // also clean local storage
+        const d = getLocalDemoData();
+        d.invoices = (d.invoices || []).filter(i => String(i.id) !== String(invoiceId));
+        saveLocalDemoData(d);
+        return true;
+      }
     } catch (rpcErr) {
       console.warn("delete_invoice_with_stock exception:", rpcErr);
     }
 
-    const { error: delErr } = await supabase
-      .from("invoices")
-      .delete()
-      .eq("id", invoiceId);
-
-    if (delErr) throw delErr;
-
-    logAuditEvent({
-      action: "INVOICE_DELETE",
-      entityType: "invoice",
-      entityId: invoiceId,
-      userId: actorInfo?.id,
-      userName: actorInfo?.name,
-      userRole: actorInfo?.role,
-      details: `Permanently deleted Invoice ID ${invoiceId}`
-    });
-
-    return true;
-  }
-
-  // Demo Fallback (LocalStorage)
-  const d = getLocalDemoData();
-  const target = (d.invoices || []).find(i => String(i.id) === String(invoiceId));
-  if (!target) throw new Error("Invoice not found.");
-
-  if (!target.isVoided) {
-    const { items } = parseItemsFromInvoice(target.rawDescription || target.description, target);
-    for (const item of items) {
-      if (item.service === "Hair Wig" && item.productId && Number(item.quantity || 0) > 0) {
-        const prod = (d.products || []).find(p => String(p.id) === String(item.productId));
-        if (prod) {
-          prod.stock = Number(prod.stock || 0) + Number(item.quantity || 0);
-        }
-      }
+    try {
+      await supabase
+        .from("invoices")
+        .delete()
+        .eq("id", invoiceId);
+    } catch (delErr) {
+      console.warn("Supabase direct invoice delete warning:", delErr);
     }
   }
 
+  // Always sync local storage
+  const d = getLocalDemoData();
   d.invoices = (d.invoices || []).filter(i => String(i.id) !== String(invoiceId));
   saveLocalDemoData(d);
-
-  logAuditEvent({
-    action: "INVOICE_DELETE",
-    entityType: "invoice",
-    entityId: invoiceId,
-    userId: actorInfo?.id,
-    userName: actorInfo?.name,
-    userRole: actorInfo?.role,
-    details: `Permanently deleted invoice #${target.invoiceNumber}`
-  });
-
   return true;
 }
 
 // -------------------------------------------------------------
-// Settings Management
+// Settings Management (Scoped per Salon)
 // -------------------------------------------------------------
-export async function fetchSettings() {
+export async function fetchSettings(salonId = "default") {
+  const salons = getLocalSalons();
+  const matchedLocal = salons.find(s => s.id === (salonId || "default"));
+
   const defaultSettings = {
-    shop_name: "NICE LOOKING",
-    shop_subtitle: "Hair Wig & Hair Services",
-    shop_mobile: "+91 98765 43210",
-    shop_address: "Mumbai, Maharashtra",
-    invoice_prefix: "NL",
-    whatsapp_number: "919876543210"
+    shop_name: matchedLocal?.name || "NICE LOOKING",
+    shop_subtitle: matchedLocal?.subtitle || "Hair Wig & Hair Services",
+    shop_mobile: matchedLocal?.mobile || "+91 98765 43210",
+    shop_address: matchedLocal?.address || "",
+    invoice_prefix: matchedLocal?.invoice_prefix || "NL",
+    whatsapp_number: matchedLocal?.whatsapp_number || "919876543210",
+    email: matchedLocal?.email || "sameershaikh121@proton.me"
   };
 
   if (supabaseConfigured) {
     try {
       const { data, error } = await supabase
-        .from("settings")
+        .from("salons")
         .select("*")
-        .eq("id", "default")
+        .eq("id", salonId || "default")
         .maybeSingle();
 
-      if (error) {
-        console.warn("Could not load settings from Supabase, checking local cache:", error);
-      } else if (data) {
-        try {
-          localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(data));
-        } catch {}
+      if (!error && data) {
         return {
-          shop_name: data.shop_name || defaultSettings.shop_name,
-          shop_subtitle: data.shop_subtitle !== undefined && data.shop_subtitle !== null ? data.shop_subtitle : defaultSettings.shop_subtitle,
-          shop_mobile: data.shop_mobile || data.whatsapp_number || defaultSettings.shop_mobile,
-          shop_address: data.shop_address !== undefined && data.shop_address !== null ? data.shop_address : defaultSettings.shop_address,
+          shop_name: data.name || defaultSettings.shop_name,
+          shop_subtitle: data.subtitle || defaultSettings.shop_subtitle,
+          shop_mobile: data.mobile || defaultSettings.shop_mobile,
+          shop_address: data.address ?? defaultSettings.shop_address,
           invoice_prefix: data.invoice_prefix || defaultSettings.invoice_prefix,
-          whatsapp_number: data.whatsapp_number || data.shop_mobile || defaultSettings.whatsapp_number
+          whatsapp_number: data.whatsapp_number || defaultSettings.whatsapp_number,
+          email: data.email || defaultSettings.email
         };
       }
     } catch (err) {
-      console.warn("Supabase fetchSettings error:", err);
+      console.warn("fetchSettings Supabase error:", err);
     }
   }
 
-  // Demo Fallback / LocalStorage
-  try {
-    const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      return {
-        shop_name: parsed.shop_name || defaultSettings.shop_name,
-        shop_subtitle: parsed.shop_subtitle !== undefined && parsed.shop_subtitle !== null ? parsed.shop_subtitle : defaultSettings.shop_subtitle,
-        shop_mobile: parsed.shop_mobile || parsed.whatsapp_number || defaultSettings.shop_mobile,
-        shop_address: parsed.shop_address !== undefined && parsed.shop_address !== null ? parsed.shop_address : defaultSettings.shop_address,
-        invoice_prefix: parsed.invoice_prefix || defaultSettings.invoice_prefix,
-        whatsapp_number: parsed.whatsapp_number || parsed.shop_mobile || defaultSettings.whatsapp_number
-      };
-    }
-    return defaultSettings;
-  } catch {
-    return defaultSettings;
+  // Demo Fallback
+  const found = salons.find(s => s.id === (salonId || "default"));
+  if (found) {
+    return {
+      shop_name: found.name || defaultSettings.shop_name,
+      shop_subtitle: found.subtitle || defaultSettings.shop_subtitle,
+      shop_mobile: found.mobile || defaultSettings.shop_mobile,
+      shop_address: found.address ?? "",
+      invoice_prefix: found.invoice_prefix || defaultSettings.invoice_prefix,
+      whatsapp_number: found.whatsapp_number || defaultSettings.whatsapp_number,
+      email: found.email || defaultSettings.email
+    };
   }
+
+  return defaultSettings;
 }
 
 export const getBusinessSettings = fetchSettings;
 
-export async function saveSettings(settings, actorInfo = null) {
+export async function saveSettings(settings, actorInfo = null, salonId = "default") {
+  const targetId = salonId || "default";
+  const userRole = (actorInfo?.role || "").toLowerCase();
+  const isSuperAdmin = userRole === "superadmin" || userRole === "super_admin";
+
+  // Fetch local salons to preserve name and other fields if not super admin
+  const localSalons = getLocalSalons();
+  const existingSalon = localSalons.find(s => s.id === targetId);
+
+  // ONLY Super Admin can change salon/branch name
+  const salonName = (!isSuperAdmin && existingSalon?.name)
+    ? existingSalon.name
+    : (settings.shop_name || existingSalon?.name || "NICE LOOKING").trim();
+
+  // Invoice prefix can be changed by Salon Owner and Super Admin
+  const prefix = ((settings.invoice_prefix !== undefined && settings.invoice_prefix !== null && String(settings.invoice_prefix).trim() !== "")
+    ? String(settings.invoice_prefix).trim()
+    : (existingSalon?.invoice_prefix || "NL")
+  ).toUpperCase() || "NL";
+
   const payload = {
-    id: "default",
-    shop_name: (settings.shop_name || "NICE LOOKING").trim(),
-    shop_subtitle: (settings.shop_subtitle || "").trim(),
-    shop_mobile: (settings.shop_mobile || settings.whatsapp_number || "").trim(),
-    shop_address: (settings.shop_address || "").trim(),
-    invoice_prefix: (settings.invoice_prefix || "NL").trim().toUpperCase() || "NL",
-    whatsapp_number: (settings.whatsapp_number || settings.shop_mobile || "").trim(),
+    id: targetId,
+    name: salonName,
+    slug: existingSalon?.slug || (targetId === "default" ? "nl-bandra" : `salon-${targetId}`),
+    subtitle: (settings.shop_subtitle !== undefined ? settings.shop_subtitle : (existingSalon?.subtitle || "Hair Wig & Hair Services")).trim(),
+    mobile: (settings.shop_mobile || settings.whatsapp_number || existingSalon?.mobile || "+91 98765 43210").trim(),
+    address: (settings.shop_address !== undefined ? settings.shop_address : (existingSalon?.address || "")).trim(),
+    invoice_prefix: prefix,
+    whatsapp_number: (settings.whatsapp_number || settings.shop_mobile || existingSalon?.whatsapp_number || "919876543210").trim(),
+    email: (settings.email || existingSalon?.email || "sameershaikh121@proton.me").trim(),
+    owner_name: existingSalon?.owner_name || "Salon Owner",
+    owner_email: existingSalon?.owner_email || "",
+    status: existingSalon?.status || "ACTIVE",
     updated_at: new Date().toISOString()
   };
 
+  let savedData = null;
+
   if (supabaseConfigured) {
-    const { data, error } = await supabase
-      .from("settings")
-      .upsert(payload)
-      .select()
-      .single();
-
-    if (error) throw error;
-
+    // 1. Try atomic RPC procedure save_salon_branch
     try {
-      localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(payload));
-    } catch {}
+      const { data: rpcData, error: rpcErr } = await supabase.rpc("save_salon_branch", {
+        p_id: payload.id,
+        p_name: payload.name,
+        p_slug: payload.slug,
+        p_subtitle: payload.subtitle,
+        p_invoice_prefix: payload.invoice_prefix,
+        p_mobile: payload.mobile,
+        p_email: payload.email,
+        p_address: payload.address,
+        p_whatsapp_number: payload.whatsapp_number,
+        p_owner_name: payload.owner_name,
+        p_owner_email: payload.owner_email,
+        p_status: payload.status
+      });
 
-    logAuditEvent({
-      action: "SETTINGS_UPDATE",
-      entityType: "settings",
-      entityId: "default",
-      userId: actorInfo?.id,
-      userName: actorInfo?.name,
-      userRole: actorInfo?.role,
-      details: `Updated business profile: ${payload.shop_name}`
-    });
+      if (!rpcErr && rpcData) {
+        savedData = rpcData;
+      } else if (rpcErr) {
+        console.warn("saveSettings save_salon_branch RPC notice:", rpcErr.message);
+      }
+    } catch (rpcEx) {
+      console.warn("saveSettings RPC exception:", rpcEx);
+    }
 
-    return data || payload;
+    // 2. Direct table upsert fallback
+    if (!savedData) {
+      try {
+        const { data: upsData, error: upsErr } = await supabase
+          .from("salons")
+          .upsert(payload)
+          .select()
+          .maybeSingle();
+
+        if (!upsErr && upsData) {
+          savedData = upsData;
+        } else if (upsErr) {
+          console.warn("saveSettings direct salons upsert notice:", upsErr.message);
+        }
+      } catch (upsEx) {
+        console.warn("saveSettings upsert exception:", upsEx);
+      }
+    }
   }
 
-  // Demo Fallback
-  localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(payload));
+  // Update local salon cache
+  const finalObj = savedData || payload;
+  const salons = getLocalSalons();
+  const idx = salons.findIndex(s => s.id === targetId);
+  if (idx >= 0) {
+    salons[idx] = { ...salons[idx], ...finalObj };
+  } else {
+    salons.push(finalObj);
+  }
+  saveLocalSalons(salons);
 
   logAuditEvent({
     action: "SETTINGS_UPDATE",
     entityType: "settings",
-    entityId: "default",
+    entityId: targetId,
     userId: actorInfo?.id,
     userName: actorInfo?.name,
     userRole: actorInfo?.role,
-    details: `Updated business profile: ${payload.shop_name}`
-  });
+    salonId: targetId,
+    details: `Updated settings for ${payload.name} (Invoice Prefix: ${payload.invoice_prefix})`
+  }).catch(() => {});
 
-  return payload;
+  return {
+    shop_name: finalObj.name || payload.name,
+    shop_subtitle: finalObj.subtitle || payload.subtitle,
+    shop_mobile: finalObj.mobile || payload.mobile,
+    shop_address: finalObj.address ?? payload.address,
+    invoice_prefix: finalObj.invoice_prefix || payload.invoice_prefix,
+    whatsapp_number: finalObj.whatsapp_number || payload.whatsapp_number,
+    email: finalObj.email || payload.email
+  };
 }
 
 export const saveBusinessSettings = saveSettings;

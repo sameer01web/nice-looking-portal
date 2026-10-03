@@ -60,15 +60,14 @@ create table if not exists public.salons (
   updated_at timestamptz not null default now()
 );
 
--- Seed default initial salons (Multi-Branch Catalog)
+-- Seed default initial salons
 insert into public.salons (id, name, slug, subtitle, mobile, email, address, invoice_prefix, whatsapp_number, status)
 values
-  ('default', 'NICE LOOKING (Bandra Flagship)', 'nl-bandra', 'Hair Wig & Hair Services - Flagship Branch', '+91 98765 43210', 'sameershaikh121@proton.me', 'Shop 4, Hill Road, Bandra West, Mumbai', 'NL', '919876543210', 'ACTIVE'),
+  ('default', 'NICE LOOKING (Bandra Main)', 'nl-bandra', 'Hair Wig & Hair Services - Flagship Branch', '+91 98765 43210', 'sameershaikh121@proton.me', 'Shop 4, Hill Road, Bandra West, Mumbai', 'NL', '919876543210', 'ACTIVE'),
   ('salon-andheri', 'NICE LOOKING (Andheri Branch)', 'nl-andheri', 'Hair Studio & Wig Specialists', '+91 98200 11223', 'sameershaikh121@proton.me', 'Unit 12, Link Road, Andheri West, Mumbai', 'NLA', '919820011223', 'ACTIVE'),
   ('salon-south-mumbai', 'Elegance Hair Studio', 'elegance-south-mumbai', 'Premium Hair Wigs & Color Studio', '+91 98111 22334', 'sameershaikh121@proton.me', 'Nariman Point, South Mumbai', 'EHS', '919811122334', 'ACTIVE')
 on conflict (id) do update
   set name = excluded.name,
-      slug = coalesce(excluded.slug, public.salons.slug),
       subtitle = excluded.subtitle,
       mobile = excluded.mobile,
       email = excluded.email,
@@ -85,7 +84,6 @@ create table if not exists public.profiles (
   role text not null default 'staff' check (role in ('superadmin', 'owner', 'admin', 'staff')),
   salon_id text references public.salons(id) default 'default',
   assigned_salons text[] default array['default']::text[],
-  must_change_password boolean default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -93,7 +91,6 @@ create table if not exists public.profiles (
 -- Safe migration for existing profiles table
 alter table public.profiles add column if not exists salon_id text references public.salons(id) default 'default';
 alter table public.profiles add column if not exists assigned_salons text[] default array['default']::text[];
-alter table public.profiles add column if not exists must_change_password boolean default false;
 
 -- Helper functions for RBAC & Tenant Verification
 create or replace function public.current_user_role()
@@ -166,64 +163,29 @@ create or replace function public.handle_new_auth_user()
 returns trigger
 language plpgsql
 security definer
-set search_path = public, auth, pg_temp
 as $$
 declare
   v_admin_count integer;
   v_role text := 'staff';
-  v_salon_id text := 'default';
-  v_must_change boolean := false;
   v_name text;
 begin
-  begin
-    select count(*) into v_admin_count from public.profiles where role in ('superadmin', 'owner', 'admin');
-  exception when others then
-    v_admin_count := 1;
-  end;
-
-  if coalesce(v_admin_count, 0) = 0 then
+  -- Check if any owner/superadmin already exists
+  select count(*) into v_admin_count from public.profiles where role in ('superadmin', 'owner', 'admin');
+  -- First user in the system automatically becomes superadmin/owner
+  if v_admin_count = 0 then
     v_role := 'superadmin';
   else
-    v_role := lower(coalesce(new.raw_user_meta_data->>'role', 'staff'));
-    if v_role not in ('superadmin', 'owner', 'admin', 'staff') then
-      v_role := 'staff';
-    end if;
+    v_role := 'staff';
   end if;
 
-  v_salon_id := coalesce(new.raw_user_meta_data->>'salon_id', 'default');
   v_name := coalesce(new.raw_user_meta_data->>'full_name', new.raw_user_meta_data->>'name', split_part(new.email, '@', 1));
-  v_must_change := coalesce((new.raw_user_meta_data->>'must_change_password')::boolean, false);
 
-  begin
-    insert into public.profiles (id, email, full_name, role, salon_id, assigned_salons, must_change_password)
-    values (
-      new.id,
-      new.email,
-      v_name,
-      v_role,
-      v_salon_id,
-      case when v_role = 'superadmin' then array['default', 'salon-andheri', 'salon-south-mumbai']::text[] else array[v_salon_id]::text[] end,
-      v_must_change
-    )
-    on conflict (id) do update
-      set email = excluded.email,
-          full_name = coalesce(excluded.full_name, public.profiles.full_name),
-          role = coalesce(excluded.role, public.profiles.role),
-          salon_id = coalesce(excluded.salon_id, public.profiles.salon_id),
-          must_change_password = coalesce(excluded.must_change_password, public.profiles.must_change_password),
-          updated_at = now();
-  exception when others then
-    begin
-      insert into public.profiles (id, email, full_name, role)
-      values (new.id, new.email, v_name, v_role)
-      on conflict (id) do update
-        set email = excluded.email,
-            full_name = coalesce(excluded.full_name, public.profiles.full_name),
-            updated_at = now();
-    exception when others then
-      null; -- Never abort auth.users creation
-    end;
-  end;
+  insert into public.profiles (id, email, full_name, role, salon_id, assigned_salons)
+  values (new.id, new.email, v_name, v_role, 'default', array['default', 'salon-andheri', 'salon-south-mumbai']::text[])
+  on conflict (id) do update
+    set email = excluded.email,
+        full_name = coalesce(public.profiles.full_name, excluded.full_name),
+        updated_at = now();
 
   return new;
 end;
@@ -510,15 +472,27 @@ insert into public.services (salon_id, name) values
   ('default', 'Hair Color'),
   ('default', 'Double Tap'),
   ('default', 'Hair Serum'),
-  ('default', 'Other')
+  ('default', 'Other'),
+  ('salon-andheri', 'Hair Wig'),
+  ('salon-andheri', 'Wig Service'),
+  ('salon-andheri', 'Hair Color'),
+  ('salon-andheri', 'Other'),
+  ('salon-south-mumbai', 'Hair Wig'),
+  ('salon-south-mumbai', 'Wig Service'),
+  ('salon-south-mumbai', 'Hair Spa & Treatment'),
+  ('salon-south-mumbai', 'Hair Color')
 on conflict do nothing;
 
--- Seed demo wig products for default salon
+-- Seed demo wig products for each branch
 insert into public.wig_products (salon_id, product_name, hair_type, color, size, price, stock, active)
 values
   ('default', 'Premium Natural Wig', 'Human Hair', 'Natural Black', '5x7', 12000, 6, true),
   ('default', 'Classic Hair Wig', 'Synthetic', 'Natural Black', '5x8', 6500, 8, true),
-  ('default', 'Silk Base Wig', 'Human Hair', 'Dark Brown', '7x9', 18000, 4, true)
+  ('default', 'Silk Base Wig', 'Human Hair', 'Dark Brown', '7x9', 18000, 4, true),
+  ('salon-andheri', 'Andheri Special Natural Wig', 'Human Hair', 'Natural Black', '6x8', 13500, 5, true),
+  ('salon-andheri', 'Lace Front Wig', 'Human Hair', 'Dark Brown', '5x7', 15000, 4, true),
+  ('salon-south-mumbai', 'Royal Monofilament Wig', 'Human Hair', 'Natural Black', '7x9', 22000, 3, true),
+  ('salon-south-mumbai', 'Silk Crown Hair System', 'Human Hair', 'Chestnut Brown', '6x8', 19500, 5, true)
 on conflict do nothing;
 
 -- =====================================================================
@@ -537,29 +511,15 @@ alter table public.whatsapp_messages enable row level security;
 
 -- 1. Salons Policies
 drop policy if exists "salons_select_accessible" on public.salons;
-drop policy if exists "salons_admin_write" on public.salons;
-drop policy if exists "salons_select_all" on public.salons;
-drop policy if exists "salons_write_all" on public.salons;
-drop policy if exists "salons_insert_all" on public.salons;
-drop policy if exists "salons_update_all" on public.salons;
-drop policy if exists "salons_delete_all" on public.salons;
-
-create policy "salons_select_all" on public.salons
+create policy "salons_select_accessible" on public.salons
   for select to authenticated, anon
   using (true);
 
-create policy "salons_insert_all" on public.salons
-  for insert to authenticated, anon
-  with check (true);
-
-create policy "salons_update_all" on public.salons
-  for update to authenticated, anon
-  using (true)
-  with check (true);
-
-create policy "salons_delete_all" on public.salons
-  for delete to authenticated, anon
-  using (true);
+drop policy if exists "salons_admin_write" on public.salons;
+create policy "salons_admin_write" on public.salons
+  for all to authenticated
+  using (public.is_admin_or_owner())
+  with check (public.is_admin_or_owner());
 
 -- 2. Profiles Policies
 drop policy if exists "profiles_select_auth" on public.profiles;
@@ -1609,7 +1569,6 @@ begin
       'role', p.role,
       'salon_id', coalesce(p.salon_id, 'default'),
       'assigned_salons', coalesce(p.assigned_salons, array[coalesce(p.salon_id, 'default')]::text[]),
-      'must_change_password', coalesce(p.must_change_password, false),
       'created_at', p.created_at,
       'updated_at', p.updated_at
     ) order by p.created_at desc
@@ -1691,233 +1650,6 @@ begin
   );
 
   return true;
-end;
-$$;
-
--- 9. Multi-Salon Management RPCs
-create or replace function public.delete_salon_branch(
-  p_salon_id text
-)
-returns boolean
-language plpgsql
-security definer
-as $$
-declare
-  v_user_id uuid := auth.uid();
-  v_user_email text;
-  v_user_name text;
-  v_user_role text;
-  v_salon record;
-begin
-  if p_salon_id is null or trim(p_salon_id) = '' or p_salon_id = 'default' then
-    raise exception 'Cannot delete the primary/default salon branch.';
-  end if;
-
-  select * into v_salon from public.salons where id = p_salon_id;
-  if not found then
-    raise exception 'Salon branch with ID "%" does not exist.', p_salon_id;
-  end if;
-
-  -- Verify permissions if authenticated
-  if v_user_id is not null then
-    select email, full_name, role into v_user_email, v_user_name, v_user_role
-      from public.profiles where id = v_user_id;
-
-    if not public.is_admin_or_owner() then
-      raise exception 'Permission Denied: Only Administrator or Owner can delete salon branches.';
-    end if;
-  end if;
-
-  -- 1. Reassign user profiles belonging to this salon back to default
-  update public.profiles
-     set salon_id = 'default',
-         assigned_salons = array_remove(coalesce(assigned_salons, array['default']::text[]), p_salon_id),
-         updated_at = now()
-   where salon_id = p_salon_id;
-
-  update public.profiles
-     set assigned_salons = array_remove(assigned_salons, p_salon_id),
-         updated_at = now()
-   where p_salon_id = any(assigned_salons);
-
-  -- 2. Remove dependent records for this salon
-  delete from public.whatsapp_messages where salon_id = p_salon_id;
-  delete from public.offers where salon_id = p_salon_id;
-  delete from public.invoices where salon_id = p_salon_id;
-  delete from public.transactions where salon_id = p_salon_id;
-  delete from public.wig_products where salon_id = p_salon_id;
-  delete from public.services where salon_id = p_salon_id;
-  delete from public.customers where salon_id = p_salon_id;
-
-  -- 3. Delete the salon record itself
-  delete from public.salons where id = p_salon_id;
-
-  -- 4. Record audit event
-  insert into public.audit_logs (
-    salon_id,
-    action,
-    entity_type,
-    entity_id,
-    user_id,
-    user_email,
-    user_name,
-    user_role,
-    old_data,
-    details
-  ) values (
-    'default',
-    'SALON_DELETE',
-    'salon',
-    p_salon_id,
-    v_user_id,
-    v_user_email,
-    v_user_name,
-    v_user_role,
-    row_to_json(v_salon)::jsonb,
-    'Permanently deleted Salon Branch: ' || coalesce(v_salon.name, p_salon_id)
-  );
-
-  return true;
-end;
-$$;
-
-create or replace function public.save_salon_branch(
-  p_id text,
-  p_name text,
-  p_slug text default null,
-  p_subtitle text default null,
-  p_invoice_prefix text default 'NL',
-  p_mobile text default null,
-  p_email text default null,
-  p_address text default null,
-  p_whatsapp_number text default null,
-  p_owner_name text default null,
-  p_owner_email text default null,
-  p_status text default 'ACTIVE'
-)
-returns jsonb
-language plpgsql
-security definer
-as $$
-declare
-  v_user_id uuid := auth.uid();
-  v_user_email text;
-  v_user_name text;
-  v_user_role text;
-  v_slug text;
-  v_prefix text;
-  v_is_new boolean;
-  v_existing record;
-  v_result jsonb;
-begin
-  if p_name is null or trim(p_name) = '' then
-    raise exception 'Salon business name is required.';
-  end if;
-
-  v_prefix := upper(trim(coalesce(p_invoice_prefix, 'NL')));
-  if v_prefix = '' then
-    v_prefix := 'NL';
-  end if;
-
-  v_slug := lower(trim(coalesce(p_slug, regexp_replace(p_name, '[^a-zA-Z0-9]+', '-', 'g'))));
-  v_slug := trim(both '-' from v_slug);
-  if v_slug = '' then
-    v_slug := 'salon-' || floor(random() * 10000)::text;
-  end if;
-
-  select * into v_existing from public.salons where id = p_id;
-  v_is_new := not found;
-
-  if v_user_id is not null then
-    select email, full_name, role into v_user_email, v_user_name, v_user_role
-      from public.profiles where id = v_user_id;
-
-    if not public.is_admin_or_owner() then
-      raise exception 'Permission Denied: Only Administrator or Owner can create or edit salon branches.';
-    end if;
-  end if;
-
-  if v_is_new then
-    insert into public.salons (
-      id,
-      name,
-      slug,
-      subtitle,
-      invoice_prefix,
-      mobile,
-      email,
-      address,
-      whatsapp_number,
-      owner_name,
-      owner_email,
-      status,
-      created_at,
-      updated_at
-    ) values (
-      p_id,
-      trim(p_name),
-      v_slug,
-      trim(coalesce(p_subtitle, 'Hair Wig & Hair Services')),
-      v_prefix,
-      trim(coalesce(p_mobile, '+91 98765 43210')),
-      trim(coalesce(p_email, 'sameershaikh121@proton.me')),
-      trim(coalesce(p_address, 'Mumbai, Maharashtra')),
-      trim(coalesce(p_whatsapp_number, '919876543210')),
-      trim(coalesce(p_owner_name, 'Salon Owner')),
-      trim(coalesce(p_owner_email, '')),
-      coalesce(p_status, 'ACTIVE'),
-      now(),
-      now()
-    );
-  else
-    update public.salons
-       set name = trim(p_name),
-           slug = coalesce(v_slug, slug),
-           subtitle = trim(coalesce(p_subtitle, subtitle)),
-           invoice_prefix = v_prefix,
-           mobile = trim(coalesce(p_mobile, mobile)),
-           email = trim(coalesce(p_email, email)),
-           address = trim(coalesce(p_address, address)),
-           whatsapp_number = trim(coalesce(p_whatsapp_number, whatsapp_number)),
-           owner_name = trim(coalesce(p_owner_name, owner_name)),
-           owner_email = trim(coalesce(p_owner_email, owner_email)),
-           status = coalesce(p_status, status),
-           updated_at = now()
-     where id = p_id;
-  end if;
-
-  -- Record audit log
-  insert into public.audit_logs (
-    salon_id,
-    action,
-    entity_type,
-    entity_id,
-    user_id,
-    user_email,
-    user_name,
-    user_role,
-    old_data,
-    new_data,
-    details
-  ) values (
-    p_id,
-    case when v_is_new then 'SALON_CREATE' else 'SALON_UPDATE' end,
-    'salon',
-    p_id,
-    v_user_id,
-    v_user_email,
-    v_user_name,
-    v_user_role,
-    case when v_is_new then null else row_to_json(v_existing)::jsonb end,
-    jsonb_build_object('id', p_id, 'name', trim(p_name), 'prefix', v_prefix, 'slug', v_slug),
-    (case when v_is_new then 'Created' else 'Updated' end) || ' Salon Branch: ' || trim(p_name) || ' (' || v_prefix || ')'
-  );
-
-  select row_to_json(s)::jsonb into v_result
-    from public.salons s
-   where s.id = p_id;
-
-  return v_result;
 end;
 $$;
 

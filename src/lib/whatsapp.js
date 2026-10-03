@@ -19,22 +19,30 @@ export function openWhatsApp(message, phone = "") {
 
 export function invoiceMessage(invoice, customSettings = null) {
   const shopName =
+    invoice?.shopSettings?.name ||
     invoice?.shopSettings?.shop_name ||
+    customSettings?.name ||
     customSettings?.shop_name ||
     "NICE LOOKING";
   const shopSubtitle =
+    invoice?.shopSettings?.subtitle ||
     invoice?.shopSettings?.shop_subtitle ||
+    customSettings?.subtitle ||
     customSettings?.shop_subtitle ||
     "Hair Wig & Hair Services";
   const shopMobile =
     invoice?.shopSettings?.shop_mobile ||
     invoice?.shopSettings?.whatsapp_number ||
+    invoice?.shopSettings?.phone ||
     customSettings?.shop_mobile ||
     customSettings?.whatsapp_number ||
+    customSettings?.phone ||
     "";
   const shopAddress =
     invoice?.shopSettings?.shop_address ||
+    invoice?.shopSettings?.address ||
     customSettings?.shop_address ||
+    customSettings?.address ||
     "";
 
   const appOrigin = getAppBaseUrl();
@@ -102,15 +110,19 @@ export function invoiceMessage(invoice, customSettings = null) {
 }
 
 export function offerMessage(offer, customSettings = null) {
-  const shopName = customSettings?.shop_name || "NICE LOOKING";
+  const shopName =
+    customSettings?.name ||
+    customSettings?.shop_name ||
+    "NICE LOOKING";
   const appOrigin = getAppBaseUrl();
+  const offerObj = typeof offer === "string" ? { description: offer } : (offer || {});
   return [
     `🎉 Special Offer from ${shopName}`,
     "",
-    offer?.title || "Special Promotion",
-    offer?.description || "",
-    offer?.discount ? `Discount: ${offer.discount}% OFF` : "",
-    offer?.validUntil ? `Valid till: ${offer.validUntil}` : "",
+    offerObj?.title || (typeof offer === "string" ? "" : "Special Promotion"),
+    offerObj?.description || (typeof offer === "string" ? offer : ""),
+    offerObj?.discount ? `Discount: ${offerObj.discount}% OFF` : "",
+    offerObj?.validUntil ? `Valid till: ${offerObj.validUntil}` : "",
     appOrigin ? `🌐 Explore: ${appOrigin}` : "",
     "",
     `Contact ${shopName} today.`
