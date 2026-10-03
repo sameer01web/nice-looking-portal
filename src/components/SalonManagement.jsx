@@ -344,7 +344,7 @@ export default function SalonManagement({
         )}
 
         {/* Salon Branches Grid */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: "16px" }}>
+        <div className="salon-cards-grid">
           {salons.map(s => {
             const isActive = currentSalon?.id === s.id;
             const canEdit = isSuperAdmin || (isOwner && (s.owner_email?.toLowerCase() === (actorInfo?.email || "").toLowerCase() || s.id === actorInfo?.salonId));

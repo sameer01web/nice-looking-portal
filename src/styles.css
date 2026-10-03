@@ -6121,3 +6121,145 @@ td small {
   color: #1d4ed8;
   border: 1px solid #bfdbfe;
 }
+
+/* =====================================================================
+   MOBILE RESPONSIVENESS & TOUCH ENHANCEMENTS (SALONS, STAFF, BILLING)
+   ===================================================================== */
+.salon-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 310px), 1fr));
+  gap: 16px;
+}
+
+.salon-card {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.salon-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08) !important;
+}
+
+@media (max-width: 768px) {
+  /* Prevent horizontal scroll leakage */
+  html, body, .app-shell {
+    max-width: 100vw;
+    overflow-x: hidden;
+  }
+
+  /* Responsive salon grid */
+  .salon-cards-grid {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .salon-card {
+    padding: 14px !important;
+  }
+
+  /* Responsive banner on Staff Management */
+  .staff-branch-context-banner {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px 14px;
+  }
+
+  .staff-branch-context-banner > div:last-child {
+    width: 100%;
+  }
+
+  .staff-branch-context-banner > div:last-child button {
+    width: 100%;
+    justify-content: center;
+  }
+
+  /* Staff Search Toolbar */
+  .staff-toolbar {
+    flex-direction: column;
+    gap: 10px;
+    align-items: stretch;
+  }
+
+  .staff-toolbar .search-box {
+    width: 100% !important;
+    min-width: 100% !important;
+  }
+
+  .staff-salon-select {
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+
+  /* Modal Dialogs as Native Mobile Bottom Sheets */
+  .modal-backdrop {
+    padding: 0;
+    align-items: flex-end;
+  }
+
+  .modal-card {
+    width: 100% !important;
+    max-width: 100% !important;
+    border-radius: 20px 20px 0 0 !important;
+    max-height: 90vh !important;
+    max-height: 90dvh !important;
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: calc(20px + var(--sab)) !important;
+    margin: 0 !important;
+  }
+
+  .modal-foot,
+  .form-actions {
+    display: flex;
+    flex-direction: column-reverse;
+    gap: 10px;
+    width: 100%;
+  }
+
+  .modal-foot .btn,
+  .form-actions .btn {
+    width: 100%;
+    height: 44px;
+    justify-content: center;
+    font-size: 14px;
+  }
+
+  /* Service Quick Select Chips */
+  .chips-container {
+    gap: 6px;
+  }
+
+  .service-chip {
+    padding: 7px 11px;
+    font-size: 12.5px;
+    border-radius: 8px;
+  }
+
+  /* Action buttons min-touch targets */
+  .btn, .icon-btn, button {
+    touch-action: manipulation;
+  }
+}
+
+@media (max-width: 480px) {
+  .salon-card > div:last-child {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .salon-card > div:last-child button {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .credential-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+
+  .credential-value {
+    word-break: break-all;
+  }
+}
