@@ -2401,16 +2401,31 @@ function Customers({ setPage, refreshTick, onDataChanged, setHeaderAction, isAdm
               </div>
               <div className="customer-profile-info">
                 <h3>{viewingCustomer.name}</h3>
-                <p>
-                  📱 <a href={`tel:${viewingCustomer.mobile}`} style={{ color: "inherit", textDecoration: "underline", fontWeight: 700 }}>{viewingCustomer.mobile}</a>
-                  {viewingCustomer.address ? ` • 📍 ${viewingCustomer.address}` : ""}
-                </p>
+                <div className="customer-contact-row">
+                  <a href={`tel:${viewingCustomer.mobile}`} className="customer-phone-chip" title="Call Customer">
+                    <Phone size={12} />
+                    <span>{viewingCustomer.mobile}</span>
+                  </a>
+                  {viewingCustomer.address && (
+                    <span className="customer-address-chip" title={viewingCustomer.address}>
+                      📍 {viewingCustomer.address}
+                    </span>
+                  )}
+                </div>
                 <div style={{ marginTop: "6px", display: "flex", gap: "6px", alignItems: "center", flexWrap: "wrap" }}>
                   <span className="pill success" style={{ fontSize: "10px" }}>
                     ✓ {viewingCustomer.whatsapp_opt_in !== false ? "WhatsApp Active" : "No WhatsApp"}
                   </span>
                   <span style={{ fontSize: "11px", color: "var(--muted)" }}>
-                    Joined: {viewingCustomer.createdAt || "—"}
+                    Joined: {(() => {
+                      if (!viewingCustomer.createdAt) return "—";
+                      try {
+                        const d = new Date(viewingCustomer.createdAt);
+                        return isNaN(d.getTime()) ? viewingCustomer.createdAt : d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+                      } catch {
+                        return viewingCustomer.createdAt;
+                      }
+                    })()}
                   </span>
                 </div>
               </div>
@@ -2509,67 +2524,53 @@ function Customers({ setPage, refreshTick, onDataChanged, setHeaderAction, isAdm
               )}
             </div>
 
-            {/* Action Buttons Footer */}
-            <div
-              style={{
-                display: "flex",
-                flexWrap: "wrap",
-                justifyContent: "space-between",
-                alignItems: "center",
-                gap: "10px",
-                marginTop: "14px",
-                paddingTop: "14px",
-                borderTop: "1px solid #e2e8f0",
-                width: "100%",
-                boxSizing: "border-box"
-              }}
-            >
+            {/* Action Buttons Footer (Sleek 2x2 Responsive Action Grid) */}
+            <div className="customer-profile-actions">
               <button
-                className="btn secondary"
+                className="profile-btn profile-btn-whatsapp"
+                type="button"
+                onClick={() =>
+                  openWhatsApp(
+                    `Special greeting from ${currentShopName} Hair Wig & Salon! Let us know if you need any service or maintenance.`,
+                    viewingCustomer.mobile
+                  )
+                }
+              >
+                <Send size={15} />
+                <span>Chat on WhatsApp</span>
+              </button>
+              <button
+                className="profile-btn profile-btn-edit"
+                type="button"
+                onClick={() => {
+                  const custToEdit = viewingCustomer;
+                  setViewingCustomer(null);
+                  setEditing({ ...custToEdit });
+                }}
+              >
+                <Pencil size={15} />
+                <span>Edit Customer</span>
+              </button>
+              <button
+                className="profile-btn profile-btn-danger"
+                type="button"
+                onClick={() => {
+                  const custToDel = viewingCustomer;
+                  setViewingCustomer(null);
+                  setConfirmDelete(custToDel);
+                }}
+              >
+                <Trash2 size={15} />
+                <span>Delete Customer</span>
+              </button>
+              <button
+                className="profile-btn profile-btn-close"
                 type="button"
                 onClick={() => setViewingCustomer(null)}
               >
-                Close
+                <X size={15} />
+                <span>Close</span>
               </button>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", alignItems: "center" }}>
-                <button
-                  className="btn whatsapp"
-                  type="button"
-                  style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}
-                  onClick={() =>
-                    openWhatsApp(
-                      `Special greeting from ${currentShopName} Hair Wig & Salon! Let us know if you need any service or maintenance.`,
-                      viewingCustomer.mobile
-                    )
-                  }
-                >
-                  <Send size={15} /> Chat on WhatsApp
-                </button>
-                <button
-                  className="btn primary"
-                  type="button"
-                  style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}
-                  onClick={() => {
-                    const custToEdit = viewingCustomer;
-                    setViewingCustomer(null);
-                    setEditing({ ...custToEdit });
-                  }}
-                >
-                  <Pencil size={15} /> Edit Customer
-                </button>
-                <button
-                  className="btn danger"
-                  type="button"
-                  style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}
-                  onClick={() => {
-                    const custToDel = viewingCustomer;
-                    setViewingCustomer(null);
-                    setConfirmDelete(custToDel);
-                  }}
-                >
-                  <Trash2 size={15} /> Delete Customer
-                </button>
-              </div>
             </div>
           </div>
         </Modal>
@@ -4285,12 +4286,18 @@ function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
                     <strong>{viewingInvoice.address}</strong>
                   </div>
                 )}
-                {viewingInvoice.description && (
-                  <div style={{ gridColumn: "span 2", marginTop: "4px" }}>
-                    <span style={{ color: "#64748b" }}>Notes: </span>
-                    <span style={{ fontStyle: "italic", color: "#334155" }}>{viewingInvoice.description}</span>
-                  </div>
-                )}
+                {(() => {
+                  const cleanNote = (viewingInvoice.description || "")
+                    .replace(/---ITEMS_JSON---[\s\S]*/g, "")
+                    .trim();
+                  if (!cleanNote) return null;
+                  return (
+                    <div style={{ gridColumn: "span 2", marginTop: "4px" }}>
+                      <span style={{ color: "#64748b" }}>Notes: </span>
+                      <span style={{ fontStyle: "italic", color: "#334155" }}>{cleanNote}</span>
+                    </div>
+                  );
+                })()}
               </div>
             </div>
 

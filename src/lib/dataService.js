@@ -2134,15 +2134,19 @@ function parseItemsFromInvoice(rawDesc, invRecord) {
   let items = [];
   let userNote = "";
 
-  if (rawDesc && typeof rawDesc === "string" && rawDesc.includes("---ITEMS_JSON---")) {
-    const parts = rawDesc.split("---ITEMS_JSON---");
-    userNote = parts[0]?.trim() || "";
-    try {
-      const parsed = JSON.parse(parts[1]?.trim() || "[]");
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        items = parsed;
-      }
-    } catch {}
+  if (rawDesc && typeof rawDesc === "string") {
+    if (rawDesc.includes("---ITEMS_JSON---")) {
+      const parts = rawDesc.split("---ITEMS_JSON---");
+      userNote = parts[0]?.trim() || "";
+      try {
+        const parsed = JSON.parse(parts[1]?.trim() || "[]");
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          items = parsed;
+        }
+      } catch {}
+    } else {
+      userNote = rawDesc.trim();
+    }
   }
 
   if (!items.length && invRecord) {
@@ -2223,7 +2227,7 @@ export async function fetchInvoices(salonId = "default") {
             voidReason: voidInfo.voidReason,
             voidedAt: voidInfo.voidedAt,
             voidedByName: voidInfo.voidedByName,
-            description: userNote || inv.description || "",
+            description: userNote || "",
             rawDescription: inv.description || "",
             items,
             createdAt: formatToLocalISODate(inv.invoice_date || inv.created_at),
@@ -2261,13 +2265,14 @@ export async function fetchInvoices(salonId = "default") {
       total,
       amount: total,
       items,
-      description: userNote || inv.description || "",
+      description: userNote || "",
       isVoided: voidInfo.isVoid,
       status: voidInfo.isVoid ? "VOIDED" : (inv.status || "PAID"),
       voidReason: voidInfo.voidReason,
       createdAt: formatToLocalISODate(inv.createdAt || inv.invoice_date || new Date().toISOString())
     };
   });
+
 
   // Merge remote and local so newly created invoices are NEVER lost
   const invMap = new Map();
