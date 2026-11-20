@@ -23,7 +23,7 @@ export function invoiceMessage(invoice, customSettings = null) {
     invoice?.shopSettings?.shop_name ||
     customSettings?.name ||
     customSettings?.shop_name ||
-    "NICE LOOKING";
+    "MY SALON";
   const shopSubtitle =
     invoice?.shopSettings?.subtitle ||
     invoice?.shopSettings?.shop_subtitle ||
@@ -52,7 +52,7 @@ export function invoiceMessage(invoice, customSettings = null) {
     "",
     `Thank you for choosing ${shopName}.`,
     "",
-    `🧾 Invoice: ${invoice?.invoiceNumber || ""}`,
+    `🧾 Invoice: ${invoice?.invoiceNumber || invoice?.invoice_number || ""}`,
     invoice?.createdAt ? `📅 Date: ${invoice.createdAt}` : "",
     "",
     "✂️ Services & Products:"
@@ -82,8 +82,10 @@ export function invoiceMessage(invoice, customSettings = null) {
 
   lines.push("");
   const sub = Number(invoice?.subtotal || 0);
-  const tot = Number(invoice?.total || invoice?.amount || 0);
+  const tot = Number(invoice?.total !== undefined ? invoice.total : (invoice?.amount || 0));
   const disc = Number(invoice?.discount || 0);
+  const adv = Number(invoice?.advanceAmount !== undefined ? invoice.advanceAmount : tot);
+  const bal = Number(invoice?.balanceAmount !== undefined ? invoice.balanceAmount : Math.max(0, tot - adv));
 
   if (sub > tot && sub > 0) {
     lines.push(`Subtotal: ₹${sub.toLocaleString("en-IN")}`);
@@ -91,8 +93,24 @@ export function invoiceMessage(invoice, customSettings = null) {
   if (disc > 0) {
     lines.push(`Discount: - ₹${disc.toLocaleString("en-IN")}`);
   }
-  lines.push(`Total Amount: ₹${tot.toLocaleString("en-IN")}`);
-  lines.push(`Payment Mode: ${invoice?.paymentMode || "Cash"}`);
+  lines.push(`💰 Today's Bill Total: ₹${tot.toLocaleString("en-IN")}`);
+
+  if (Number(invoice?.previousDuesCleared || 0) > 0) {
+    lines.push(`🧾 Previous Dues Cleared: ₹${Number(invoice.previousDuesCleared).toLocaleString("en-IN")}`);
+    lines.push(`💵 Total Paid Today: ₹${Number(invoice.totalPaidToday || (adv + Number(invoice.previousDuesCleared))).toLocaleString("en-IN")}`);
+  } else {
+    lines.push(`💵 Advance Received: ₹${adv.toLocaleString("en-IN")}`);
+  }
+
+  if (bal > 0) {
+    lines.push(`⚠️ Pending Balance on Today's Bill: ₹${bal.toLocaleString("en-IN")}`);
+    lines.push(`📌 Status: BALANCE PENDING`);
+  } else {
+    lines.push(`✅ Balance: ₹0 (Fully Paid)`);
+    lines.push(`📌 Status: FULLY PAID`);
+  }
+
+  lines.push(`💳 Payment Mode: ${invoice?.paymentMode || "Cash"}`);
   if (shopAddress) {
     lines.push(`📍 Address: ${shopAddress}`);
   }
@@ -102,6 +120,85 @@ export function invoiceMessage(invoice, customSettings = null) {
   if (appOrigin) {
     lines.push(`🌐 Portal: ${appOrigin}`);
   }
+  lines.push("");
+  lines.push("📄 Official Invoice PDF is generated & attached for your records.");
+  lines.push("");
+  lines.push("Thank you,");
+  lines.push(`${shopName}${shopSubtitle ? ` – ${shopSubtitle}` : ""}`);
+
+  return lines.join("\n");
+}
+
+export function settlementReceiptMessage(invoice, settlement, customSettings = null) {
+  const shopName =
+    invoice?.shopSettings?.name ||
+    invoice?.shopSettings?.shop_name ||
+    customSettings?.name ||
+    customSettings?.shop_name ||
+    "MY SALON";
+  const shopSubtitle =
+    invoice?.shopSettings?.subtitle ||
+    invoice?.shopSettings?.shop_subtitle ||
+    customSettings?.subtitle ||
+    customSettings?.shop_subtitle ||
+    "Hair Wig & Hair Services";
+  const shopMobile =
+    invoice?.shopSettings?.shop_mobile ||
+    invoice?.shopSettings?.whatsapp_number ||
+    invoice?.shopSettings?.phone ||
+    customSettings?.shop_mobile ||
+    customSettings?.whatsapp_number ||
+    customSettings?.phone ||
+    "";
+  const shopAddress =
+    invoice?.shopSettings?.shop_address ||
+    invoice?.shopSettings?.address ||
+    customSettings?.shop_address ||
+    customSettings?.address ||
+    "";
+
+  const appOrigin = getAppBaseUrl();
+  const custName = invoice?.customerName || invoice?.name || "Customer";
+  const invNo = invoice?.invoiceNumber || invoice?.invoice_number || "";
+  const tot = Number(invoice?.total !== undefined ? invoice.total : (invoice?.amount || 0));
+  const settledNow = Number(settlement?.amount || 0);
+  const remainingBal = Number(invoice?.balanceAmount !== undefined ? invoice.balanceAmount : 0);
+  const totalPaid = Math.max(0, tot - remainingBal);
+
+  const lines = [
+    `Hello ${custName},`,
+    "",
+    `Thank you for your payment at ${shopName}.`,
+    "",
+    `💳 PAYMENT RECEIPT - BALANCE SETTLEMENT`,
+    `🧾 Invoice: ${invNo}`,
+    `📅 Date: ${settlement?.date ? String(settlement.date).slice(0, 10) : new Date().toISOString().slice(0, 10)}`,
+    "",
+    `💰 Total Bill Amount: ₹${tot.toLocaleString("en-IN")}`,
+    `💵 Amount Received Now: ₹${settledNow.toLocaleString("en-IN")}`,
+    `💳 Payment Mode: ${settlement?.paymentMode || "Cash"}`,
+    `📊 Total Paid So Far: ₹${totalPaid.toLocaleString("en-IN")}`
+  ];
+
+  if (remainingBal > 0) {
+    lines.push(`⚠️ Remaining Pending Balance: ₹${remainingBal.toLocaleString("en-IN")}`);
+    lines.push(`📌 Status: PARTIAL PAYMENT (Pending: ₹${remainingBal.toLocaleString("en-IN")})`);
+  } else {
+    lines.push(`✅ Remaining Balance: ₹0 (Zero)`);
+    lines.push(`📌 Status: FULLY PAID (All dues cleared!)`);
+  }
+
+  if (shopAddress) {
+    lines.push(`📍 Address: ${shopAddress}`);
+  }
+  if (shopMobile) {
+    lines.push(`📞 Contact: ${shopMobile}`);
+  }
+  if (appOrigin) {
+    lines.push(`🌐 Portal: ${appOrigin}`);
+  }
+  lines.push("");
+  lines.push("📄 Your updated Invoice PDF is generated & attached for your records.");
   lines.push("");
   lines.push("Thank you,");
   lines.push(`${shopName}${shopSubtitle ? ` – ${shopSubtitle}` : ""}`);
@@ -113,7 +210,7 @@ export function offerMessage(offer, customSettings = null) {
   const shopName =
     customSettings?.name ||
     customSettings?.shop_name ||
-    "NICE LOOKING";
+    "MY SALON";
   const appOrigin = getAppBaseUrl();
   const offerObj = typeof offer === "string" ? { description: offer } : (offer || {});
   return [

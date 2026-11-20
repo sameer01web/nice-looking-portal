@@ -207,7 +207,7 @@ export default function StaffManagement({
   function copyCredentialsToClipboard() {
     if (!credentialsModal) return;
     const loginUrl = getAppBaseUrl();
-    const text = `💈 NICE LOOKING PORTAL — LOGIN CREDENTIALS 💈\n\n🏢 Assigned Branch: ${credentialsModal.salonName}\n👤 Name: ${credentialsModal.name}\n✉️ Login ID: ${credentialsModal.email}\n🔑 Temporary Password: ${credentialsModal.tempPassword}\n🛡️ Access Role: ${credentialsModal.role}\n🌐 Portal Login URL: ${loginUrl}\n\n⚠️ NOTE: On first login, you must change this temporary password to your permanent password.`;
+    const text = `💈 MY SALON PORTAL — LOGIN CREDENTIALS 💈\n\n🏢 Assigned Branch: ${credentialsModal.salonName}\n👤 Name: ${credentialsModal.name}\n✉️ Login ID: ${credentialsModal.email}\n🔑 Temporary Password: ${credentialsModal.tempPassword}\n🛡️ Access Role: ${credentialsModal.role}\n🌐 Portal Login URL: ${loginUrl}\n\n⚠️ NOTE: On first login, you must change this temporary password to your permanent password.`;
 
     navigator.clipboard.writeText(text);
     setCopied(true);
@@ -441,7 +441,7 @@ export default function StaffManagement({
               const salonObj = availableSalons.find(s => s.id === userSalonId);
               const userSalonName = isSuper
                 ? "Global Platform Admin"
-                : (salonObj?.name || (userSalonId === "default" ? "NICE LOOKING (Bandra Flagship)" : userSalonId));
+                : (salonObj?.name || (userSalonId === "default" ? "MY SALON (Bandra Flagship)" : userSalonId));
               const displayName = user.full_name || user.fullName || user.email?.split("@")[0] || "Staff Member";
               const initials = (displayName || "S").slice(0, 2).toUpperCase();
 
@@ -548,7 +548,7 @@ export default function StaffManagement({
         )}
       </section>
 
-      {/* Enterprise RBAC Hierarchy Reference Cards (4-Column Layout) */}
+      {/* Enterprise RBAC Hierarchy Reference Cards */}
       <section className="panel" style={{ marginTop: "16px" }}>
         <div className="panel-head" style={{ marginBottom: "16px" }}>
           <div>
@@ -560,24 +560,7 @@ export default function StaffManagement({
         </div>
 
         <div className="rbac-cards-grid">
-          {/* Level 1: Super Admin */}
-          <div className="rbac-info-card rbac-card-super">
-            <div className="rbac-card-header">
-              <div className="rbac-card-icon">👑</div>
-              <div>
-                <h4>Super Admin</h4>
-                <span className="rbac-sub">Platform Administrator</span>
-              </div>
-            </div>
-            <ul className="rbac-feature-list">
-              <li>Full platform oversight across all salon branches</li>
-              <li>Create branches & provision Salon Owner accounts</li>
-              <li>Switch between branch views seamlessly</li>
-              <li>Manage all users, roles & system audit logs</li>
-            </ul>
-          </div>
-
-          {/* Level 2: Salon Owner */}
+          {/* Level 1: Salon Owner */}
           <div className="rbac-info-card rbac-card-owner">
             <div className="rbac-card-header">
               <div className="rbac-card-icon">⭐</div>

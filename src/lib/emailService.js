@@ -37,8 +37,8 @@ export async function sendEmail({
   subject,
   message,
   recipientEmail,
-  senderName = "NICE LOOKING Portal",
-  salonName = "NICE LOOKING",
+  senderName = "MY SALON Portal",
+  salonName = "MY SALON",
   extraData = {}
 }) {
   const cleanRecipient = String(recipientEmail || "").trim();
@@ -50,7 +50,7 @@ export async function sendEmail({
     const payload = {
       access_key: WEB3FORMS_ACCESS_KEY,
       subject: cleanSubject,
-      from_name: `${salonName} | NICE LOOKING`,
+      from_name: `${salonName} | MY SALON`,
       email: cleanRecipient || PRIMARY_NOTIFICATION_EMAIL,
       name: senderName,
       message: cleanMessage,
@@ -132,7 +132,7 @@ export async function sendInvoiceEmail({
 }) {
   if (!invoice) throw new Error("Invoice data is required.");
 
-  const shopName = invoice?.shopSettings?.shop_name || customSettings?.shop_name || customSettings?.name || "NICE LOOKING";
+  const shopName = invoice?.shopSettings?.shop_name || customSettings?.shop_name || customSettings?.name || "MY SALON";
   const shopSubtitle = invoice?.shopSettings?.shop_subtitle || customSettings?.shop_subtitle || customSettings?.subtitle || "Hair Wig & Hair Services";
   const shopMobile = invoice?.shopSettings?.shop_mobile || customSettings?.shop_mobile || customSettings?.mobile || "";
   const shopAddress = invoice?.shopSettings?.shop_address || customSettings?.shop_address || customSettings?.address || "";
@@ -199,7 +199,7 @@ TOTAL PAID:    ₹${total.toLocaleString("en-IN")}
 
 Thank you for choosing ${shopName}!
 Portal link: ${appOrigin}
-Sent via NICE LOOKING Automated Billing System.
+Sent via MY SALON Automated Billing System.
 ========================================
 `.trim();
 
@@ -230,7 +230,7 @@ Sent via NICE LOOKING Automated Billing System.
 export async function sendDailyReportEmail({
   date = new Date().toLocaleDateString("en-IN"),
   metrics = {},
-  salonName = "NICE LOOKING",
+  salonName = "MY SALON",
   recipientEmail = null,
   actorInfo = null
 }) {
@@ -254,7 +254,7 @@ Online/UPI/Card:     ₹${Number(metrics.todayOnline || 0).toLocaleString("en-IN
 Total Active Wigs:   ${metrics.totalStock || 0} Units
 
 Portal Dashboard: ${appOrigin}
-Sent automatically via NICE LOOKING Multi-Salon Portal.
+Sent automatically via MY SALON Multi-Salon Portal.
 ========================================
 `.trim();
 
@@ -280,7 +280,7 @@ Sent automatically via NICE LOOKING Multi-Salon Portal.
  */
 export async function sendTestEmail({
   recipientEmail = null,
-  salonName = "NICE LOOKING",
+  salonName = "MY SALON",
   actorName = "Admin"
 }) {
   const targetEmail = recipientEmail || PRIMARY_NOTIFICATION_EMAIL;
@@ -289,7 +289,7 @@ export async function sendTestEmail({
   const messageBody = `
 ✅ Web3Forms & FormSubmit Email Connectivity Test Successful!
 
-This is a confirmation message verifying that email delivery is active and working properly in the NICE LOOKING Multi-Salon Portal.
+This is a confirmation message verifying that email delivery is active and working properly in the MY SALON Multi-Salon Portal.
 
 DETAILS:
 - Delivery Provider: Web3Forms (Primary) / FormSubmit (Fallback)
@@ -307,7 +307,7 @@ Your portal is fully configured to send digital invoice receipts, booking alerts
     subject: `✅ Email Connectivity Test Passed - ${salonName}`,
     message: messageBody,
     recipientEmail: targetEmail,
-    senderName: "NICE LOOKING System",
+    senderName: "MY SALON System",
     salonName: salonName,
     extraData: {
       test_type: "CONNECTIVITY_VERIFICATION",

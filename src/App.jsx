@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useState, useCallback, lazy, Suspense } from "react";
 import {
   BadgeIndianRupee,
   BarChart3,
@@ -38,6 +38,7 @@ import {
   UserCheck,
   Shield,
   ShieldAlert,
+  ShieldCheck,
   AlertTriangle,
   Ban,
   Lock,
@@ -46,9 +47,12 @@ import {
   KeyRound,
   Mail,
   ArrowLeft,
+  ArrowRight,
   Building2,
   Crown,
-  ExternalLink
+  ExternalLink,
+  CalendarCheck,
+  Banknote
 } from "lucide-react";
 import { supabaseConfigured, getMumbaiTodayISO, formatToLocalISODate, getAppBaseUrl } from "./lib/supabase";
 import {
@@ -78,19 +82,38 @@ import {
   updateInvoice,
   voidInvoice,
   deleteInvoice,
+  settleInvoiceBalance,
+  findCustomerPendingUdhar,
   fetchSettings,
   saveSettings,
   getBusinessSettings,
   saveBusinessSettings,
   fetchSalons,
   saveSalon,
-  deleteSalon
+  deleteSalon,
+  fetchPayrollDashboardMetrics,
+  peekCachedQuery,
+  getLocalDemoData
 } from "./lib/dataService";
 import { invoiceMessage, offerMessage, openWhatsApp, normalizeWhatsAppNumber } from "./lib/whatsapp";
-import AuditLogs from "./components/AuditLogs";
-import StaffManagement from "./components/StaffManagement";
+
+async function downloadInvoicePDF(...args) {
+  const mod = await import("./lib/invoicePdf");
+  return mod.downloadInvoicePDF(...args);
+}
+async function shareInvoicePDFOnWhatsApp(...args) {
+  const mod = await import("./lib/invoicePdf");
+  return mod.shareInvoicePDFOnWhatsApp(...args);
+}
 import AccessRestricted from "./components/AccessRestricted";
-import SalonManagement from "./components/SalonManagement";
+import SettleUdharModal from "./components/SettleUdharModal";
+
+const AuditLogs = lazy(() => import("./components/AuditLogs"));
+const StaffManagement = lazy(() => import("./components/StaffManagement"));
+const SalonManagement = lazy(() => import("./components/SalonManagement"));
+const EmployeeManagement = lazy(() => import("./components/EmployeeManagement"));
+const AttendanceManagement = lazy(() => import("./components/AttendanceManagement"));
+const PayrollManagement = lazy(() => import("./components/PayrollManagement"));
 
 const services = [
   "Hair Wig",
@@ -138,6 +161,74 @@ function csvDownload(rows, filename) {
   a.download = filename;
   a.click();
   URL.revokeObjectURL(a.href);
+}
+
+function formatActivityDate(dateStr) {
+  if (!dateStr) return "—";
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return String(dateStr);
+    const day = d.toLocaleDateString("en-IN", {
+      day: "2-digit",
+      month: "short",
+      timeZone: "Asia/Kolkata"
+    });
+    const isIsoTime = String(dateStr).includes("T") || String(dateStr).includes(":");
+    if (isIsoTime) {
+      const time = d.toLocaleTimeString("en-IN", {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: true,
+        timeZone: "Asia/Kolkata"
+      });
+      return `${day}, ${time}`;
+    }
+    return day;
+  } catch {
+    return String(dateStr);
+  }
+}
+
+class PageErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error, errorInfo) {
+    console.error("Page render error:", error, errorInfo);
+  }
+  componentDidUpdate(prevProps) {
+    if (prevProps.page !== this.props.page && this.state.hasError) {
+      this.setState({ hasError: false, error: null });
+    }
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: "30px", maxWidth: "600px", margin: "40px auto", background: "#fff", borderRadius: "14px", border: "1px solid #fee2e2", boxShadow: "0 10px 25px rgba(0,0,0,0.05)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", color: "#dc2626", marginBottom: "12px" }}>
+            <AlertTriangle size={24} />
+            <h3 style={{ margin: 0, fontSize: "18px" }}>Module Load Issue</h3>
+          </div>
+          <p style={{ color: "#64748b", fontSize: "14px", margin: "0 0 16px 0" }}>
+            {this.state.error?.message || "An unexpected error occurred while rendering this page."}
+          </p>
+          <div style={{ display: "flex", gap: "10px" }}>
+            <button className="btn primary" onClick={() => window.location.reload()}>
+              <RefreshCw size={14} /> Reload Page
+            </button>
+            <button className="btn secondary" onClick={() => { this.setState({ hasError: false, error: null }); this.props.setPage("dashboard"); }}>
+              Back to Dashboard
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 // =====================================================================
@@ -406,7 +497,7 @@ export default function App() {
           <div className="brand-mark" style={{ margin: "0 auto 16px" }}>
             <Scissors size={24} />
           </div>
-          <h3>Loading NICE LOOKING Portal...</h3>
+          <h3>Loading MY SALON Portal...</h3>
           <p className="muted">Connecting to secure system</p>
         </div>
       </div>
@@ -595,7 +686,7 @@ function FirstLoginPasswordChange({ userProfile, onPasswordChanged, onLogout }) 
           </div>
           <h2 className="first-login-title">Set Your Permanent Password</h2>
           <p className="first-login-subtitle">
-            Welcome, <strong>{userProfile?.fullName || "User"}</strong>! Your account was created with a temporary password by your administrator. You must set a permanent password before entering the NICE LOOKING Portal.
+            Welcome, <strong>{userProfile?.fullName || "User"}</strong>! Your account was created with a temporary password by your administrator. You must set a permanent password before entering the MY SALON Portal.
           </p>
           <div className="first-login-user-pill">
             <span>✉️ {userProfile?.email}</span>
@@ -710,8 +801,11 @@ function AuthScreen({
 }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [newPassword, setNewPassword] = useState("");
+  const [showNewPassword, setShowNewPassword] = useState(false);
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [otpCode, setOtpCode] = useState("");
   const [resendCooldown, setResendCooldown] = useState(60);
 
@@ -789,45 +883,47 @@ function AuthScreen({
   return (
     <div className="auth-page">
       <div className="auth-card">
-        <div className="brand-mark">
-          {mode === "verify-otp" ? <KeyRound size={22} /> : <Scissors size={22} />}
+        {/* Brand Header */}
+        <div className="auth-header">
+          <div className="auth-logo-badge">
+            {mode === "verify-otp" ? <KeyRound size={26} /> : <Scissors size={26} />}
+          </div>
+          <div className="auth-brand-pill">
+            <Sparkles size={12} />
+            <span>MY SALON</span>
+          </div>
+          <h1 className="auth-title">{titles[mode] || "Welcome back"}</h1>
+          <p className="auth-subtitle">{subtitles[mode] || "Hair Wig & Services Management"}</p>
         </div>
-        <div className="eyebrow">NICE LOOKING</div>
-        <h1>{titles[mode] || "Welcome back"}</h1>
-        <p className="muted">{subtitles[mode] || "Hair Wig & Services Management"}</p>
 
-        <form onSubmit={handleSubmit}>
+        <form onSubmit={handleSubmit} className="auth-form">
           {(mode === "login" || mode === "forgot") && (
-            <label>
-              Email / User ID
-              <input
-                type="email"
-                required
-                value={email}
-                onChange={e => setEmail(e.target.value)}
-                placeholder="user@example.com"
-              />
-            </label>
+            <div className="auth-field-group">
+              <label className="auth-field-label">Email / User ID</label>
+              <div className="auth-input-wrapper">
+                <span className="auth-input-icon">
+                  <Mail size={18} />
+                </span>
+                <input
+                  type="email"
+                  className="auth-input"
+                  required
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
+                  placeholder="user@example.com"
+                  autoComplete="username"
+                />
+              </div>
+            </div>
           )}
 
           {mode === "login" && (
-            <div>
-              <label>
-                Password
-                <input
-                  type="password"
-                  required
-                  minLength={6}
-                  value={password}
-                  onChange={e => setPassword(e.target.value)}
-                  placeholder="•••••••• (min 6 characters)"
-                />
-              </label>
-              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "6px" }}>
+            <div className="auth-field-group">
+              <div className="auth-label-row">
+                <label className="auth-field-label">Password</label>
                 <button
                   type="button"
-                  className="link-btn"
-                  style={{ padding: 0, fontSize: "11px", fontWeight: "600", color: "var(--blue)" }}
+                  className="auth-forgot-link"
                   onClick={() => {
                     setMode("forgot");
                     if (setMessage) setMessage({ text: "", type: "info" });
@@ -836,17 +932,41 @@ function AuthScreen({
                   Forgot Password?
                 </button>
               </div>
+              <div className="auth-input-wrapper">
+                <span className="auth-input-icon">
+                  <Lock size={18} />
+                </span>
+                <input
+                  type={showPassword ? "text" : "password"}
+                  className="auth-input has-toggle"
+                  required
+                  minLength={6}
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  placeholder="•••••••• (min 6 characters)"
+                  autoComplete="current-password"
+                />
+                <button
+                  type="button"
+                  className="auth-toggle-pwd"
+                  onClick={() => setShowPassword(v => !v)}
+                  title={showPassword ? "Hide password" : "Show password"}
+                  tabIndex={-1}
+                >
+                  {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                </button>
+              </div>
             </div>
           )}
 
           {mode === "verify-otp" && (
-            <div style={{ marginTop: "16px" }}>
-              <div style={{ textAlign: "center", marginBottom: "4px" }}>
+            <div style={{ marginTop: "12px", marginBottom: "8px" }}>
+              <div style={{ textAlign: "center", marginBottom: "8px" }}>
                 <div className="otp-email-badge">
                   <Mail size={13} />
                   <span>{email || pendingEmail}</span>
                 </div>
-                <p style={{ fontSize: "12px", color: "var(--muted)", margin: "0 0 10px" }}>
+                <p style={{ fontSize: "12.5px", color: "var(--muted)", margin: "0 0 12px" }}>
                   Please enter the 6-digit code sent to your email address:
                 </p>
               </div>
@@ -894,28 +1014,58 @@ function AuthScreen({
 
           {mode === "reset" && (
             <>
-              <label>
-                New Password
-                <input
-                  type="password"
-                  required
-                  minLength={6}
-                  value={newPassword}
-                  onChange={e => setNewPassword(e.target.value)}
-                  placeholder="•••••••• (min 6 characters)"
-                />
-              </label>
-              <label>
-                Confirm New Password
-                <input
-                  type="password"
-                  required
-                  minLength={6}
-                  value={confirmPassword}
-                  onChange={e => setConfirmPassword(e.target.value)}
-                  placeholder="••••••••"
-                />
-              </label>
+              <div className="auth-field-group">
+                <label className="auth-field-label">New Password</label>
+                <div className="auth-input-wrapper">
+                  <span className="auth-input-icon">
+                    <Lock size={18} />
+                  </span>
+                  <input
+                    type={showNewPassword ? "text" : "password"}
+                    className="auth-input has-toggle"
+                    required
+                    minLength={6}
+                    value={newPassword}
+                    onChange={e => setNewPassword(e.target.value)}
+                    placeholder="•••••••• (min 6 characters)"
+                  />
+                  <button
+                    type="button"
+                    className="auth-toggle-pwd"
+                    onClick={() => setShowNewPassword(v => !v)}
+                    title={showNewPassword ? "Hide password" : "Show password"}
+                    tabIndex={-1}
+                  >
+                    {showNewPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                  </button>
+                </div>
+              </div>
+              <div className="auth-field-group">
+                <label className="auth-field-label">Confirm New Password</label>
+                <div className="auth-input-wrapper">
+                  <span className="auth-input-icon">
+                    <Lock size={18} />
+                  </span>
+                  <input
+                    type={showConfirmPassword ? "text" : "password"}
+                    className="auth-input has-toggle"
+                    required
+                    minLength={6}
+                    value={confirmPassword}
+                    onChange={e => setConfirmPassword(e.target.value)}
+                    placeholder="••••••••"
+                  />
+                  <button
+                    type="button"
+                    className="auth-toggle-pwd"
+                    onClick={() => setShowConfirmPassword(v => !v)}
+                    title={showConfirmPassword ? "Hide password" : "Show password"}
+                    tabIndex={-1}
+                  >
+                    {showConfirmPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                  </button>
+                </div>
+              </div>
             </>
           )}
 
@@ -943,7 +1093,7 @@ function AuthScreen({
           )}
 
           <button
-            className="btn primary full"
+            className="btn-auth-submit"
             disabled={
               loading ||
               (mode === "login" && (!email || !password)) ||
@@ -953,36 +1103,50 @@ function AuthScreen({
             }
             type="submit"
           >
-            {loading
-              ? "Please wait..."
-              : mode === "login"
-              ? "Sign In"
-              : mode === "verify-otp"
-              ? "Verify OTP & Continue"
-              : mode === "forgot"
-              ? "Send Reset Link"
-              : "Update Password"}
+            {loading ? (
+              <span className="btn-auth-loading">
+                <RefreshCw className="spin" size={17} />
+                <span>Authenticating...</span>
+              </span>
+            ) : mode === "login" ? (
+              <span className="btn-auth-content">
+                <span>Sign In to Dashboard</span>
+                <ArrowRight size={17} />
+              </span>
+            ) : mode === "verify-otp" ? (
+              "Verify OTP & Continue"
+            ) : mode === "forgot" ? (
+              "Send Reset Link"
+            ) : (
+              "Update Password"
+            )}
           </button>
         </form>
 
         {mode !== "login" && (
-          <button
-            className="link-btn"
-            type="button"
-            onClick={() => {
-              setMode("login");
-              if (setMessage) setMessage({ text: "", type: "info" });
-            }}
-          >
-            ← Back to Login
-          </button>
+          <div style={{ textAlign: "center", marginTop: "16px" }}>
+            <button
+              className="link-btn"
+              type="button"
+              style={{ fontSize: "13px", fontWeight: 600, color: "var(--blue)" }}
+              onClick={() => {
+                setMode("login");
+                if (setMessage) setMessage({ text: "", type: "info" });
+              }}
+            >
+              ← Back to Login
+            </button>
+          </div>
         )}
 
-        <div className="private-access-notice">
-          <Shield size={18} style={{ color: "#d97706", flexShrink: 0 }} />
-          <span>
-            <strong>Private Portal:</strong> Accounts & temporary passwords are created by the Application Admin or Salon Owner.
-          </span>
+        <div className="auth-security-footer">
+          <div className="auth-security-icon-box">
+            <ShieldCheck size={18} />
+          </div>
+          <div className="auth-security-text">
+            <strong>Private & Secure Cloud Portal</strong>
+            <p>Access restricted to authorized salon owners & assigned staff members.</p>
+          </div>
         </div>
       </div>
     </div>
@@ -1005,7 +1169,7 @@ function DashboardShell({ session, userProfile, onLogout }) {
   });
   const [salonDropdownOpen, setSalonDropdownOpen] = useState(false);
   const [settings, setSettings] = useState({
-    shop_name: "NICE LOOKING",
+    shop_name: "MY SALON",
     shop_subtitle: "Hair Wig & Hair Services",
     shop_mobile: "+91 98765 43210",
     shop_address: "Mumbai, Maharashtra",
@@ -1076,7 +1240,7 @@ function DashboardShell({ session, userProfile, onLogout }) {
     if (found) return found;
     return salons[0] || {
       id: currentSalonId || "default",
-      name: settings?.shop_name || "NICE LOOKING",
+      name: settings?.shop_name || "MY SALON",
       subtitle: settings?.shop_subtitle || "Hair Wig & Hair Services",
       invoice_prefix: settings?.invoice_prefix || "NL",
       mobile: settings?.shop_mobile || "+91 98765 43210",
@@ -1110,12 +1274,15 @@ function DashboardShell({ session, userProfile, onLogout }) {
         ["customers", "Customers", Users],
         ["billing", "New Billing", IndianRupee],
         ["invoices", "Invoices", FileText],
+        ["employees", "Employees", UserCheck],
+        ["attendance", "Attendance", CalendarCheck],
+        ["payroll", "Payroll", Banknote],
         ["products", "Wig Products", Package],
         ["offers", "Offers & WhatsApp", Percent],
         ["reports", "Reports", BarChart3],
         ["salons", "Salons & Branches", Building2],
         ["audit", "Audit Logs", History],
-        ["staff", "Staff Management", UserCheck],
+        ["staff", "Staff Management", Shield],
         ["settings", "Settings", Settings]
       ];
     }
@@ -1125,6 +1292,9 @@ function DashboardShell({ session, userProfile, onLogout }) {
         ["customers", "Customers", Users],
         ["billing", "New Billing", IndianRupee],
         ["invoices", "Invoices", FileText],
+        ["employees", "Employees", UserCheck],
+        ["attendance", "Attendance", CalendarCheck],
+        ["payroll", "Payroll", Banknote],
         ["products", "Wig Products", Package],
         ["offers", "Offers & WhatsApp", Percent],
         ["reports", "Reports", BarChart3],
@@ -1137,6 +1307,8 @@ function DashboardShell({ session, userProfile, onLogout }) {
       ["customers", "Customers", Users],
       ["billing", "New Billing", IndianRupee],
       ["invoices", "Invoices", FileText],
+      ["employees", "Employees", UserCheck],
+      ["attendance", "Attendance", CalendarCheck],
       ["products", "Wig Products", Package],
       ["offers", "Offers & WhatsApp", Percent],
       ["salons", "Salons & Branches", Building2],
@@ -1173,7 +1345,7 @@ function DashboardShell({ session, userProfile, onLogout }) {
                   <Scissors size={19} />
                 </div>
                 <div className="brand-text">
-                  <strong>{currentSalon?.name || settings?.shop_name || "NICE LOOKING"}</strong>
+                  <strong>{currentSalon?.name || settings?.shop_name || "MY SALON"}</strong>
                   <span>{currentSalon?.subtitle || settings?.shop_subtitle || "Hair Wig & Services"}</span>
                 </div>
               </div>
@@ -1277,7 +1449,7 @@ function DashboardShell({ session, userProfile, onLogout }) {
               >
                 <Building2 size={15} className="salon-btn-icon" />
                 <div className="salon-btn-text">
-                  <strong className="salon-btn-name">{currentSalon?.name || "NICE LOOKING"}</strong>
+                  <strong className="salon-btn-name">{currentSalon?.name || "MY SALON"}</strong>
                   <span className="salon-code-tag">{currentSalon?.invoice_prefix || "NL"}</span>
                 </div>
                 {(isSuperAdmin || isOwner || salons.length > 1) && (
@@ -1365,6 +1537,7 @@ function DashboardShell({ session, userProfile, onLogout }) {
 
         {/* Dynamic Page Content with Multi-Salon Scope & Route Guarding */}
         <div className="content">
+          <PageErrorBoundary page={page} setPage={setPage}>
           {page === "dashboard" && (
             <Dashboard
               setPage={setPage}
@@ -1460,43 +1633,81 @@ function DashboardShell({ session, userProfile, onLogout }) {
               <AccessRestricted userRole={userRole} setPage={setPage} />
             )
           )}
-          {page === "salons" && (
-            <SalonManagement
-              salons={salons}
-              currentSalon={currentSalon}
-              onSwitchSalon={switchSalon}
-              onDataChanged={() => {
-                loadSalons();
-                triggerGlobalRefresh();
-              }}
-              actorInfo={actorInfo}
-            />
-          )}
-          {page === "audit" && (
-            isAdmin ? (
-              <AuditLogs
-                refreshTick={refreshTick}
-                setHeaderAction={setHeaderAction}
-                currentSalon={currentSalon}
-                availableSalons={salons}
-              />
-            ) : (
-              <AccessRestricted userRole={userRole} setPage={setPage} />
-            )
-          )}
-          {page === "staff" && (
-            isAdmin ? (
-              <StaffManagement
-                refreshTick={refreshTick}
-                onDataChanged={triggerGlobalRefresh}
+          <Suspense fallback={<div className="loading-state" style={{ padding: "40px", textAlign: "center", color: "#64748b" }}><RefreshCw className="spin" size={24} style={{ display: "inline-block", verticalAlign: "middle", marginRight: "8px" }} /> Loading module...</div>}>
+            {page === "employees" && (
+              <EmployeeManagement
+                salonId={currentSalonId}
                 actorInfo={actorInfo}
                 currentSalon={currentSalon}
+                isAdmin={isAdmin}
                 availableSalons={salons}
+                setHeaderAction={setHeaderAction}
+                setPage={setPage}
               />
-            ) : (
-              <AccessRestricted userRole={userRole} setPage={setPage} />
-            )
-          )}
+            )}
+            {page === "attendance" && (
+              <AttendanceManagement
+                salonId={currentSalonId}
+                actorInfo={actorInfo}
+                currentSalon={currentSalon}
+                isAdmin={isAdmin}
+                setHeaderAction={setHeaderAction}
+                setPage={setPage}
+              />
+            )}
+            {page === "payroll" && (
+              isAdmin ? (
+                <PayrollManagement
+                  salonId={currentSalonId}
+                  actorInfo={actorInfo}
+                  currentSalon={currentSalon}
+                  isAdmin={isAdmin}
+                  availableSalons={salons}
+                  setHeaderAction={setHeaderAction}
+                  setPage={setPage}
+                />
+              ) : (
+                <AccessRestricted userRole={userRole} setPage={setPage} />
+              )
+            )}
+            {page === "salons" && (
+              <SalonManagement
+                salons={salons}
+                currentSalon={currentSalon}
+                onSwitchSalon={switchSalon}
+                onDataChanged={() => {
+                  loadSalons();
+                  triggerGlobalRefresh();
+                }}
+                actorInfo={actorInfo}
+              />
+            )}
+            {page === "audit" && (
+              isAdmin ? (
+                <AuditLogs
+                  refreshTick={refreshTick}
+                  setHeaderAction={setHeaderAction}
+                  currentSalon={currentSalon}
+                  availableSalons={salons}
+                />
+              ) : (
+                <AccessRestricted userRole={userRole} setPage={setPage} />
+              )
+            )}
+            {page === "staff" && (
+              isAdmin ? (
+                <StaffManagement
+                  refreshTick={refreshTick}
+                  onDataChanged={triggerGlobalRefresh}
+                  actorInfo={actorInfo}
+                  currentSalon={currentSalon}
+                  availableSalons={salons}
+                />
+              ) : (
+                <AccessRestricted userRole={userRole} setPage={setPage} />
+              )
+            )}
+          </Suspense>
           {page === "settings" && (
             <SettingsPage
               actorInfo={actorInfo}
@@ -1510,6 +1721,7 @@ function DashboardShell({ session, userProfile, onLogout }) {
               }}
             />
           )}
+          </PageErrorBoundary>
         </div>
 
 
@@ -1589,6 +1801,50 @@ function DashboardShell({ session, userProfile, onLogout }) {
               </div>
 
               <div className="drawer-grid">
+                <button
+                  type="button"
+                  className={`drawer-tile ${page === "employees" ? "active" : ""}`}
+                  onClick={() => {
+                    setPage("employees");
+                    setMoreOpen(false);
+                  }}
+                >
+                  <div className="drawer-icon-wrap">
+                    <UserCheck size={20} />
+                  </div>
+                  <span>Employees</span>
+                </button>
+
+                <button
+                  type="button"
+                  className={`drawer-tile ${page === "attendance" ? "active" : ""}`}
+                  onClick={() => {
+                    setPage("attendance");
+                    setMoreOpen(false);
+                  }}
+                >
+                  <div className="drawer-icon-wrap">
+                    <CalendarCheck size={20} />
+                  </div>
+                  <span>Attendance</span>
+                </button>
+
+                {isAdmin && (
+                  <button
+                    type="button"
+                    className={`drawer-tile ${page === "payroll" ? "active" : ""}`}
+                    onClick={() => {
+                      setPage("payroll");
+                      setMoreOpen(false);
+                    }}
+                  >
+                    <div className="drawer-icon-wrap">
+                      <Banknote size={20} />
+                    </div>
+                    <span>Salary / Payroll</span>
+                  </button>
+                )}
+
                 <button
                   type="button"
                   className={`drawer-tile ${page === "products" ? "active" : ""}`}
@@ -1727,14 +1983,46 @@ function Kpi({ icon: Icon, label, value, note }) {
 // 1. Dashboard Component
 // =====================================================================
 function Dashboard({ setPage, refreshTick, onDataChanged, setHeaderAction, isAdmin, userRole, actorInfo, salonId, currentSalon }) {
-  const [invoices, setInvoices] = useState([]);
-  const [customers, setCustomers] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [invoices, setInvoices] = useState(() => {
+    const cached = peekCachedQuery(`invoices_${salonId || "default"}`);
+    if (cached) return cached;
+    const d = getLocalDemoData();
+    return (d.invoices || []).filter(i => (salonId && salonId !== "all") ? (i.salonId || i.salon_id) === salonId : true);
+  });
+  const [customers, setCustomers] = useState(() => {
+    const cached = peekCachedQuery(`customers_${salonId || "default"}`);
+    if (cached) return cached;
+    const d = getLocalDemoData();
+    return (d.customers || []).filter(c => (salonId && salonId !== "all") ? (c.salonId || c.salon_id) === salonId : true);
+  });
+  const [loading, setLoading] = useState(() => {
+    return !peekCachedQuery(`invoices_${salonId || "default"}`) && !getLocalDemoData().invoices?.length;
+  });
   const [selectedDate, setSelectedDate] = useState(null);
+  const [activityFilter, setActivityFilter] = useState("all"); // "all" | "pending" | "bills"
+  const [hrMetrics, setHrMetrics] = useState(() => {
+    const m = (selectedDate || getMumbaiTodayISO()).slice(0, 7);
+    const cached = peekCachedQuery(`payroll_dash_${salonId || "default"}_${m}`);
+    return cached || {
+      totalEmployees: 0,
+      presentToday: 0,
+      absentToday: 0,
+      monthlySalaryExpense: 0,
+      pendingSalary: 0,
+      paidSalary: 0,
+      monthYear: m
+    };
+  });
+  const [hrLoading, setHrLoading] = useState(() => {
+    const m = (selectedDate || getMumbaiTodayISO()).slice(0, 7);
+    return !peekCachedQuery(`payroll_dash_${salonId || "default"}_${m}`);
+  });
 
   useEffect(() => {
     let active = true;
-    setLoading(true);
+    if (!invoices.length) {
+      setLoading(true);
+    }
 
     Promise.all([fetchInvoices(salonId), fetchCustomers(salonId)])
       .then(([invs, custs]) => {
@@ -1753,33 +2041,181 @@ function Dashboard({ setPage, refreshTick, onDataChanged, setHeaderAction, isAdm
     };
   }, [refreshTick, salonId]);
 
+  useEffect(() => {
+    let active = true;
+    const currentMonth = (selectedDate || getMumbaiTodayISO()).slice(0, 7);
+    fetchPayrollDashboardMetrics(currentMonth, salonId)
+      .then(res => {
+        if (!active) return;
+        setHrMetrics(res || {
+          totalEmployees: 0,
+          presentToday: 0,
+          absentToday: 0,
+          monthlySalaryExpense: 0,
+          pendingSalary: 0,
+          paidSalary: 0,
+          monthYear: currentMonth
+        });
+        setHrLoading(false);
+      })
+      .catch(err => {
+        console.warn("fetchPayrollDashboardMetrics error:", err);
+        if (active) setHrLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [refreshTick, salonId, selectedDate]);
+
   const today = getMumbaiTodayISO();
   const activeDate = selectedDate || today;
   const isToday = activeDate === today;
 
-  // Filter invoices strictly for activeDate (exclude VOIDED invoices from revenue)
-  const activeInvoices = invoices.filter(
-    r => r.createdAt === activeDate && !r.isVoided && r.status !== "VOIDED"
-  );
+  // Helper to accurately calculate actual money received on a given date (or all dates if null)
+  // Money received = Initial advance received when bill is created ON that date + any settlement payment collected ON that date
+  const getCollectionsForDate = useCallback((targetDate) => {
+    let totalReceived = 0;
+    let cashReceived = 0;
+    let onlineReceived = 0;
+    let initialAdvReceived = 0;
+    let pendingRecovered = 0;
+    let pendingCount = 0;
 
-  const sales = activeInvoices.reduce((s, r) => s + Number(r.amount || r.total || 0), 0);
-  const cash = activeInvoices
-    .filter(r => r.paymentMode === "Cash")
-    .reduce((s, r) => s + Number(r.amount || r.total || 0), 0);
-  const digital = activeInvoices
-    .filter(r => ["UPI", "Card", "Netbanking", "Online"].includes(r.paymentMode))
-    .reduce((s, r) => s + Number(r.amount || r.total || 0), 0);
+    invoices.forEach(inv => {
+      if (inv.isVoided || inv.status === "VOIDED") return;
+
+      const settlements = Array.isArray(inv.settlements) ? inv.settlements : [];
+      const totalSettled = settlements.reduce((sum, s) => sum + Number(s.amount || 0), 0);
+      const totalAdv = Number(inv.advanceAmount !== undefined ? inv.advanceAmount : (inv.total || inv.amount || 0));
+      const initialPaid = Math.max(0, totalAdv - totalSettled);
+
+      const invDate = (inv.createdAt || "").slice(0, 10);
+      if (!targetDate || invDate === targetDate) {
+        if (initialPaid > 0) {
+          totalReceived += initialPaid;
+          initialAdvReceived += initialPaid;
+          if (String(inv.paymentMode || "").toLowerCase() === "cash") {
+            cashReceived += initialPaid;
+          } else {
+            onlineReceived += initialPaid;
+          }
+        }
+      }
+
+      settlements.forEach(s => {
+        const sDate = (s.date || "").slice(0, 10);
+        if (!targetDate || sDate === targetDate) {
+          const sAmt = Number(s.amount || 0);
+          if (sAmt > 0) {
+            totalReceived += sAmt;
+            pendingRecovered += sAmt;
+            pendingCount += 1;
+            if (String(s.paymentMode || "").toLowerCase() === "cash") {
+              cashReceived += sAmt;
+            } else {
+              onlineReceived += sAmt;
+            }
+          }
+        }
+      });
+    });
+
+    return { totalReceived, cashReceived, onlineReceived, initialAdvReceived, pendingRecovered, pendingCount };
+  }, [invoices]);
+
+  const activeCollections = useMemo(() => {
+    return getCollectionsForDate(activeDate);
+  }, [getCollectionsForDate, activeDate]);
+
+  // Unified stream of individual payment transactions (initial advance + subsequent pending collections)
+  const allCollectionsStream = useMemo(() => {
+    const list = [];
+    invoices.forEach(inv => {
+      if (inv.isVoided || inv.status === "VOIDED") return;
+
+      const settlements = Array.isArray(inv.settlements) ? inv.settlements : [];
+      const totalSettled = settlements.reduce((sum, s) => sum + Number(s.amount || 0), 0);
+      const totalAdv = Number(inv.advanceAmount !== undefined ? inv.advanceAmount : (inv.total || inv.amount || 0));
+      const initialPaid = Math.max(0, totalAdv - totalSettled);
+
+      // 1. Initial Bill Advance
+      if (initialPaid > 0) {
+        list.push({
+          id: `init_${inv.id}`,
+          type: "NEW_BILL",
+          typeLabel: Number(inv.balanceAmount || 0) > 0 ? "Advance Received" : "Full Bill Payment",
+          invoiceId: inv.id,
+          invoiceNumber: inv.invoiceNumber,
+          customerName: inv.name,
+          customerMobile: inv.mobile,
+          service: inv.service,
+          amount: initialPaid,
+          billTotal: Number(inv.total || inv.amount || 0),
+          balanceLeft: Number(inv.balanceAmount || 0),
+          paymentMode: inv.paymentMode || "Cash",
+          date: inv.createdAt,
+          staffName: inv.staffName || "Staff",
+          note: inv.description || "",
+          invoice: inv
+        });
+      }
+
+      // 2. Pending settlements collected
+      settlements.forEach((s, idx) => {
+        const sAmt = Number(s.amount || 0);
+        if (sAmt > 0) {
+          list.push({
+            id: s.id || `stl_${inv.id}_${idx}`,
+            type: "PENDING_COLLECTED",
+            typeLabel: "Pending Cleared",
+            invoiceId: inv.id,
+            invoiceNumber: inv.invoiceNumber,
+            customerName: inv.name,
+            customerMobile: inv.mobile,
+            service: inv.service,
+            amount: sAmt,
+            billTotal: Number(inv.total || inv.amount || 0),
+            balanceLeft: Number(inv.balanceAmount || 0),
+            paymentMode: s.paymentMode || "Cash",
+            date: s.date || inv.createdAt,
+            staffName: s.collectedByName || "Staff",
+            note: s.note || "",
+            invoice: inv
+          });
+        }
+      });
+    });
+
+    return list.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
+  }, [invoices]);
+
+  // Total pending balance across all active invoices (unpaid money due from customers)
+  const totalPendingBalance = useMemo(() => {
+    return invoices
+      .filter(inv => !inv.isVoided && inv.status !== "VOIDED")
+      .reduce((sum, inv) => sum + Number(inv.balanceAmount || 0), 0);
+  }, [invoices]);
+
+  const datePendingCreated = useMemo(() => {
+    return invoices
+      .filter(inv => !inv.isVoided && inv.status !== "VOIDED" && (inv.createdAt || "").slice(0, 10) === activeDate)
+      .reduce((sum, inv) => sum + Number(inv.balanceAmount || 0), 0);
+  }, [invoices, activeDate]);
 
   // Compute dynamic KPI labels and notes based on active date
   const kpiLabels = useMemo(() => {
     if (isToday) {
       return {
-        sales: "Today's Sales",
-        cash: "Cash",
-        online: "Online",
-        noteSales: "Total today's billing",
+        received: "Today's Received",
+        cash: "Cash Received",
+        online: "Online Received",
+        pending: "Pending Balance",
+        noteReceived: activeCollections.pendingRecovered > 0
+          ? `Incl. ${money(activeCollections.pendingRecovered)} pending cleared`
+          : "Actual money collected today",
         noteCash: "Today's cash collection",
-        noteOnline: "UPI + Card + Netbanking"
+        noteOnline: "Today's UPI / Card / Netbanking"
       };
     }
 
@@ -1797,16 +2233,19 @@ function Dashboard({ setPage, refreshTick, onDataChanged, setHeaderAction, isAdm
     const dateDescriptor = isYesterday ? "Yesterday" : dayMonth;
 
     return {
-      sales: `Sales — ${dateDescriptor}`,
+      received: `Received — ${dateDescriptor}`,
       cash: `Cash — ${dateDescriptor}`,
       online: `Online — ${dateDescriptor}`,
-      noteSales: `Total billing on ${dayMonth}`,
+      pending: "Pending Balance",
+      noteReceived: activeCollections.pendingRecovered > 0
+        ? `Incl. ${money(activeCollections.pendingRecovered)} pending cleared`
+        : `Actual money collected on ${dayMonth}`,
       noteCash: `Cash collection on ${dayMonth}`,
       noteOnline: `UPI + Card + Netbanking (${dayMonth})`
     };
-  }, [activeDate, isToday]);
+  }, [activeDate, isToday, activeCollections.pendingRecovered]);
 
-  // Calculate past 7 days revenue for Mumbai local dates (chart always shows full 7 days, excluding voided)
+  // Calculate past 7 days actual collections for Mumbai local dates (chart shows real money received, excluding voided)
   const days = useMemo(() => {
     return Array.from({ length: 7 }, (_, i) => {
       const dt = new Date();
@@ -1821,19 +2260,34 @@ function Dashboard({ setPage, refreshTick, onDataChanged, setHeaderAction, isAdm
         month: "short",
         timeZone: "Asia/Kolkata"
       });
-      const amount = invoices
-        .filter(r => r.createdAt === key && !r.isVoided && r.status !== "VOIDED")
-        .reduce((sum, r) => sum + Number(r.amount || r.total || 0), 0);
-      return { key, label, dayNum, amount };
+      const { totalReceived } = getCollectionsForDate(key);
+      return { key, label, dayNum, amount: totalReceived };
     });
-  }, [invoices]);
+  }, [getCollectionsForDate]);
 
   const maxRevenue = Math.max(...days.map(x => x.amount), 0);
   const sevenDayTotal = days.reduce((sum, d) => sum + d.amount, 0);
   const customerCount = customers.length;
   const whatsappOptInCount = customers.filter(c => c.whatsapp_opt_in !== false).length;
   const optInPercentage = customerCount > 0 ? Math.round((whatsappOptInCount / customerCount) * 100) : 100;
-  const recentRows = invoices.slice(0, 6);
+
+  const pendingCollectionsCount = useMemo(() => {
+    return allCollectionsStream.filter(a => a.type === "PENDING_COLLECTED").length;
+  }, [allCollectionsStream]);
+
+  const newBillsCount = useMemo(() => {
+    return allCollectionsStream.filter(a => a.type === "NEW_BILL").length;
+  }, [allCollectionsStream]);
+
+  const filteredActivity = useMemo(() => {
+    let list = allCollectionsStream;
+    if (activityFilter === "pending") {
+      list = list.filter(a => a.type === "PENDING_COLLECTED");
+    } else if (activityFilter === "bills") {
+      list = list.filter(a => a.type === "NEW_BILL");
+    }
+    return list.slice(0, 8);
+  }, [allCollectionsStream, activityFilter]);
 
   // Push action buttons directly to topbar header
   useEffect(() => {
@@ -1853,43 +2307,52 @@ function Dashboard({ setPage, refreshTick, onDataChanged, setHeaderAction, isAdm
   return (
     <>
 
-      {/* Top 3 Date-Sensitive KPI Grid: Sales, Cash, Online (UPI+Card+Netbanking) */}
+      {/* Top 4 Date-Sensitive KPI Grid: Received, Cash, Online, Pending Balance */}
       <div
         className="kpi-grid"
-        style={{ gridTemplateColumns: "repeat(3, 1fr)" }}
+        style={{ gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", marginBottom: "14px" }}
       >
         <Kpi
           icon={IndianRupee}
-          label={kpiLabels.sales}
-          value={money(sales)}
-          note={kpiLabels.noteSales}
+          label={kpiLabels.received}
+          value={money(activeCollections.totalReceived)}
+          note={kpiLabels.noteReceived}
+          style={{ borderLeft: "4px solid #16a34a" }}
         />
         <Kpi
           icon={BadgeIndianRupee}
           label={kpiLabels.cash}
-          value={money(cash)}
+          value={money(activeCollections.cashReceived)}
           note={kpiLabels.noteCash}
         />
         <Kpi
           icon={ShoppingBag}
           label={kpiLabels.online}
-          value={money(digital)}
+          value={money(activeCollections.onlineReceived)}
           note={kpiLabels.noteOnline}
+        />
+        <Kpi
+          icon={AlertTriangle}
+          label={kpiLabels.pending}
+          value={money(totalPendingBalance)}
+          note={datePendingCreated > 0 ? `+${money(datePendingCreated)} added ${isToday ? "today" : "on this date"}` : "Unpaid customer balance"}
+          style={{ borderLeft: "4px solid #ea580c" }}
         />
       </div>
 
-      <div className="grid-2">
+      {/* Revenue Overview & Customer Base CRM Cards - Positioned directly below top KPIs for zero-scroll visibility */}
+      <div className="grid-2" style={{ marginBottom: "14px" }}>
         {/* Enhanced 7-Day Revenue Overview Panel */}
-        <section className="panel revenue-chart-panel">
-          <div className="panel-head">
+        <section className="panel revenue-chart-panel" style={{ padding: "16px 18px" }}>
+          <div className="panel-head" style={{ marginBottom: "10px" }}>
             <div>
               <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                <h3>Revenue Overview</h3>
+                <h3 style={{ fontSize: "16px", margin: 0 }}>Revenue Overview</h3>
                 <span className="pill" style={{ background: "#eff6ff", color: "var(--blue)", borderColor: "#bfdbfe" }}>
                   7D: {money(sevenDayTotal)}
                 </span>
               </div>
-              <p>Last 7 days • click any bar to filter KPIs for that day</p>
+              <p style={{ margin: "2px 0 0", fontSize: "12px" }}>Last 7 days • click any bar to filter KPIs for that day</p>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
               {!isToday && (
@@ -1905,7 +2368,7 @@ function Dashboard({ setPage, refreshTick, onDataChanged, setHeaderAction, isAdm
             </div>
           </div>
 
-          <div className="chart-container">
+          <div className="chart-container" style={{ height: "205px", padding: "6px 4px 28px" }}>
             {/* Background horizontal guide lines */}
             <div className="chart-grid-bg">
               <div className="chart-grid-line">
@@ -1955,27 +2418,27 @@ function Dashboard({ setPage, refreshTick, onDataChanged, setHeaderAction, isAdm
         </section>
 
         {/* Enhanced Customer Base Hero Card */}
-        <section className="panel customer-hero-panel">
-          <div className="panel-head">
+        <section className="panel customer-hero-panel" style={{ padding: "16px 18px" }}>
+          <div className="panel-head" style={{ marginBottom: "10px" }}>
             <div>
-              <h3>Customer Base</h3>
-              <p>Total registered clients & audience</p>
+              <h3 style={{ fontSize: "16px", margin: 0 }}>Customer Base</h3>
+              <p style={{ margin: "2px 0 0", fontSize: "12px" }}>Total registered clients & audience</p>
             </div>
             <span className="pill success">Active CRM</span>
           </div>
 
-          <div className="customer-hero-card">
-            <div className="customer-hero-main">
-              <div className="customer-hero-icon-box">
-                <Users size={30} />
+          <div className="customer-hero-card" style={{ minHeight: "205px" }}>
+            <div className="customer-hero-main" style={{ padding: "4px 0 10px" }}>
+              <div className="customer-hero-icon-box" style={{ width: "52px", height: "52px" }}>
+                <Users size={26} />
               </div>
               <div className="customer-hero-metric-group">
-                <div className="customer-hero-count">{customerCount}</div>
+                <div className="customer-hero-count" style={{ fontSize: "36px" }}>{customerCount}</div>
                 <span className="customer-hero-label">Registered Customers</span>
               </div>
             </div>
 
-            <div className="customer-insights-list">
+            <div className="customer-insights-list" style={{ margin: "6px 0 10px" }}>
               <div className="customer-insight-item">
                 <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                   <MessageCircle size={14} style={{ color: "#16a34a" }} /> WhatsApp Opt-In
@@ -2010,19 +2473,218 @@ function Dashboard({ setPage, refreshTick, onDataChanged, setHeaderAction, isAdm
         </section>
       </div>
 
-      <section className="panel table-panel">
-        <div className="panel-head">
-          <div>
-            <h3>Recent Transactions</h3>
-            <p>Latest customer payments</p>
+      {/* Employee, Attendance & Payroll Overview (Requirement #8) */}
+      <section className="panel" style={{ marginTop: "0", marginBottom: "14px", padding: "14px 18px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px", marginBottom: "12px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <div style={{ width: "34px", height: "34px", borderRadius: "10px", background: "rgba(37,99,235,0.1)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--blue)" }}>
+              <UserCheck size={18} />
+            </div>
+            <div>
+              <h3 style={{ margin: 0, fontSize: "15px", fontWeight: 700, color: "#0f172a" }}>Staff, Attendance & Payroll</h3>
+              <p style={{ margin: 0, fontSize: "11px", color: "#64748b" }}>
+                Turnout for {selectedDate ? formatToLocalISODate(new Date(selectedDate)) : "Today"} & monthly payroll overview ({hrMetrics.monthYear || (selectedDate || today).slice(0, 7)})
+              </p>
+            </div>
           </div>
-          <button
-            className="link-btn"
-            type="button"
-            onClick={() => setPage("invoices")}
+          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+            <button
+              className="btn secondary small-btn"
+              type="button"
+              onClick={() => setPage("attendance")}
+              title="Mark or view attendance"
+            >
+              <CalendarCheck size={14} /> Attendance Roster
+            </button>
+            <button
+              className="btn secondary small-btn"
+              type="button"
+              onClick={() => setPage("employees")}
+              title="View all employees"
+            >
+              <Users size={14} /> Employees ({hrMetrics.totalEmployees})
+            </button>
+            {isAdmin && (
+              <button
+                className="btn primary small-btn"
+                type="button"
+                onClick={() => setPage("payroll")}
+                title="Open Monthly Payroll"
+              >
+                <Banknote size={14} /> Manage Payroll
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div
+          className="kpi-grid"
+          style={{ gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "10px", margin: 0 }}
+        >
+          <div
+            className="kpi"
+            style={{ cursor: "pointer", background: "#f8fafc", transition: "all 0.2s" }}
+            onClick={() => setPage("employees")}
           >
-            View all
-          </button>
+            <div className="kpi-top">
+              <div className="kpi-icon" style={{ background: "#e0f2fe", color: "#0369a1" }}>
+                <Users size={18} />
+              </div>
+              <span className="status-dot">●</span>
+            </div>
+            <span className="kpi-label">Total Employees</span>
+            <strong>{hrLoading ? "..." : hrMetrics.totalEmployees}</strong>
+            <small>Active staff enrolled</small>
+          </div>
+
+          <div
+            className="kpi"
+            style={{ cursor: "pointer", background: "#f0fdf4", borderLeft: "4px solid #16a34a", transition: "all 0.2s" }}
+            onClick={() => setPage("attendance")}
+          >
+            <div className="kpi-top">
+              <div className="kpi-icon" style={{ background: "#dcfce7", color: "#15803d" }}>
+                <CalendarCheck size={18} />
+              </div>
+              <span className="status-dot" style={{ color: "#16a34a" }}>●</span>
+            </div>
+            <span className="kpi-label">Present Today</span>
+            <strong style={{ color: "#16a34a" }}>{hrLoading ? "..." : hrMetrics.presentToday}</strong>
+            <small>Includes half-day shifts</small>
+          </div>
+
+          <div
+            className="kpi"
+            style={{ cursor: "pointer", background: hrMetrics.absentToday > 0 ? "#fef2f2" : "#f8fafc", borderLeft: hrMetrics.absentToday > 0 ? "4px solid #dc2626" : "none", transition: "all 0.2s" }}
+            onClick={() => setPage("attendance")}
+          >
+            <div className="kpi-top">
+              <div className="kpi-icon" style={{ background: hrMetrics.absentToday > 0 ? "#fee2e2" : "#f1f5f9", color: hrMetrics.absentToday > 0 ? "#b91c1c" : "#64748b" }}>
+                <AlertTriangle size={18} />
+              </div>
+              <span className="status-dot" style={{ color: hrMetrics.absentToday > 0 ? "#dc2626" : "#94a3b8" }}>●</span>
+            </div>
+            <span className="kpi-label">Absent Today</span>
+            <strong style={{ color: hrMetrics.absentToday > 0 ? "#dc2626" : "#64748b" }}>{hrLoading ? "..." : hrMetrics.absentToday}</strong>
+            <small>{hrMetrics.absentToday > 0 ? "Staff absent today" : "No absent staff"}</small>
+          </div>
+
+          {isAdmin ? (
+            <>
+              <div
+                className="kpi"
+                style={{ cursor: "pointer", background: "#f8fafc", transition: "all 0.2s" }}
+                onClick={() => setPage("payroll")}
+              >
+                <div className="kpi-top">
+                  <div className="kpi-icon" style={{ background: "#eff6ff", color: "var(--blue)" }}>
+                    <IndianRupee size={18} />
+                  </div>
+                  <span className="status-dot" style={{ color: "var(--blue)" }}>●</span>
+                </div>
+                <span className="kpi-label">Monthly Salary Expense</span>
+                <strong>{hrLoading ? "..." : money(hrMetrics.monthlySalaryExpense)}</strong>
+                <small>Calculated net payable</small>
+              </div>
+
+              <div
+                className="kpi"
+                style={{ cursor: "pointer", background: hrMetrics.pendingSalary > 0 ? "#fff7ed" : "#f8fafc", borderLeft: hrMetrics.pendingSalary > 0 ? "4px solid #ea580c" : "none", transition: "all 0.2s" }}
+                onClick={() => setPage("payroll")}
+              >
+                <div className="kpi-top">
+                  <div className="kpi-icon" style={{ background: hrMetrics.pendingSalary > 0 ? "#ffedd5" : "#f1f5f9", color: hrMetrics.pendingSalary > 0 ? "#c2410c" : "#64748b" }}>
+                    <RotateCcw size={18} />
+                  </div>
+                  <span className="status-dot" style={{ color: hrMetrics.pendingSalary > 0 ? "#ea580c" : "#94a3b8" }}>●</span>
+                </div>
+                <span className="kpi-label">Pending Salary</span>
+                <strong style={{ color: hrMetrics.pendingSalary > 0 ? "#ea580c" : "#16a34a" }}>
+                  {hrLoading ? "..." : money(hrMetrics.pendingSalary)}
+                </strong>
+                <small>{hrMetrics.pendingSalary > 0 ? "Unpaid payroll balance" : "All salaries cleared"}</small>
+              </div>
+
+              <div
+                className="kpi"
+                style={{ cursor: "pointer", background: "#f0fdf4", borderLeft: "4px solid #16a34a", transition: "all 0.2s" }}
+                onClick={() => setPage("payroll")}
+              >
+                <div className="kpi-top">
+                  <div className="kpi-icon" style={{ background: "#dcfce7", color: "#15803d" }}>
+                    <CheckCircle size={18} />
+                  </div>
+                  <span className="status-dot" style={{ color: "#16a34a" }}>●</span>
+                </div>
+                <span className="kpi-label">Paid Salary</span>
+                <strong style={{ color: "#16a34a" }}>{hrLoading ? "..." : money(hrMetrics.paidSalary)}</strong>
+                <small>Disbursed this month</small>
+              </div>
+            </>
+          ) : (
+            <div className="kpi" style={{ background: "#f8fafc", opacity: 0.85 }}>
+              <div className="kpi-top">
+                <div className="kpi-icon"><Lock size={18} /></div>
+              </div>
+              <span className="kpi-label">Payroll Access</span>
+              <strong>Owner Only</strong>
+              <small>Confidential salary data</small>
+            </div>
+          )}
+        </div>
+      </section>
+
+      <section className="panel table-panel">
+        <div className="panel-head" style={{ flexWrap: "wrap", gap: "10px" }}>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+              <h3>Recent Collections & Activity</h3>
+              {activeCollections.pendingRecovered > 0 && (
+                <span className="pill success" style={{ fontWeight: 700, fontSize: "11px" }}>
+                  💳 {money(activeCollections.pendingRecovered)} Pending Recovered {isToday ? "Today" : "on this date"}
+                </span>
+              )}
+            </div>
+            <p>Real-time stream of bill advances & customer pending payments collected</p>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+            {/* Filter Toggle Chips */}
+            <div style={{ display: "flex", gap: "4px", background: "#f1f5f9", padding: "3px", borderRadius: "8px" }}>
+              <button
+                type="button"
+                className={`discount-chip ${activityFilter === "all" ? "active" : ""}`}
+                style={activityFilter === "all" ? { background: "#0f172a", color: "#ffffff", borderColor: "#0f172a" } : {}}
+                onClick={() => setActivityFilter("all")}
+              >
+                All ({allCollectionsStream.length})
+              </button>
+              <button
+                type="button"
+                className={`discount-chip ${activityFilter === "pending" ? "active" : ""}`}
+                style={activityFilter === "pending" ? { background: "#16a34a", color: "#ffffff", borderColor: "#16a34a" } : {}}
+                onClick={() => setActivityFilter("pending")}
+              >
+                💳 Pending Cleared ({pendingCollectionsCount})
+              </button>
+              <button
+                type="button"
+                className={`discount-chip ${activityFilter === "bills" ? "active" : ""}`}
+                style={activityFilter === "bills" ? { background: "#2563eb", color: "#ffffff", borderColor: "#2563eb" } : {}}
+                onClick={() => setActivityFilter("bills")}
+              >
+                🧾 New Bills ({newBillsCount})
+              </button>
+            </div>
+
+            <button
+              className="link-btn"
+              type="button"
+              onClick={() => setPage("invoices")}
+              style={{ marginLeft: "4px" }}
+            >
+              View Invoices & Collections →
+            </button>
+          </div>
         </div>
 
         {/* Desktop Table View */}
@@ -2031,34 +2693,77 @@ function Dashboard({ setPage, refreshTick, onDataChanged, setHeaderAction, isAdm
             <thead>
               <tr>
                 <th>Customer</th>
-                <th>Service</th>
-                <th>Amount</th>
-                <th>Payment</th>
-                <th>Date</th>
+                <th>Activity / Invoice</th>
+                <th>Bill Total</th>
+                <th>Amount Received</th>
+                <th>Balance Left</th>
+                <th>Payment Mode</th>
+                <th>Date & Staff</th>
               </tr>
             </thead>
             <tbody>
-              {recentRows.length ? (
-                recentRows.map((r, i) => (
-                  <tr key={r.id || i}>
-                    <td>
-                      <strong>{r.name}</strong>
-                      <small>{r.mobile}</small>
-                    </td>
-                    <td>{r.service}</td>
-                    <td>
-                      <strong>{money(r.amount || r.total)}</strong>
-                    </td>
-                    <td>
-                      <PaymentModeBadge mode={r.paymentMode} />
-                    </td>
-                    <td>{r.createdAt}</td>
-                  </tr>
-                ))
+              {filteredActivity.length ? (
+                filteredActivity.map((r, i) => {
+                  const isPending = r.type === "PENDING_COLLECTED";
+                  return (
+                    <tr key={r.id || i} style={isPending ? { background: "#f0fdf4" } : {}}>
+                      <td>
+                        <strong>{r.customerName}</strong>
+                        <small>{r.customerMobile}</small>
+                      </td>
+                      <td>
+                        <div style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
+                          {isPending ? (
+                            <span className="pill" style={{ background: "#dcfce7", color: "#15803d", fontWeight: 700, width: "fit-content" }}>
+                              💳 Pending Collected
+                            </span>
+                          ) : (
+                            <span className="pill" style={{ background: "#eff6ff", color: "#1d4ed8", fontWeight: 600, width: "fit-content" }}>
+                              🧾 {r.typeLabel}
+                            </span>
+                          )}
+                          <span style={{ fontSize: "11.5px", color: "#475569" }}>
+                            Invoice #{r.invoiceNumber} {r.service ? `• ${r.service}` : ""}
+                          </span>
+                        </div>
+                      </td>
+                      <td>
+                        <span style={{ color: "#64748b" }}>{money(r.billTotal)}</span>
+                      </td>
+                      <td>
+                        <strong style={{ color: "#16a34a", fontSize: "13.5px" }}>
+                          +{money(r.amount)}
+                        </strong>
+                      </td>
+                      <td>
+                        {r.balanceLeft > 0 ? (
+                          <span style={{ color: "#dc2626", fontWeight: 700 }}>
+                            {money(r.balanceLeft)}
+                          </span>
+                        ) : (
+                          <span style={{ color: "#16a34a", fontSize: "11.5px", fontWeight: 600 }}>
+                            ✓ Fully Paid
+                          </span>
+                        )}
+                      </td>
+                      <td>
+                        <PaymentModeBadge mode={r.paymentMode} />
+                      </td>
+                      <td>
+                        <div style={{ fontSize: "12px", color: "#334155" }}>
+                          {formatActivityDate(r.date)}
+                        </div>
+                        {isPending && r.staffName && (
+                          <small style={{ color: "#64748b" }}>by {r.staffName}</small>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })
               ) : (
                 <tr>
-                  <td colSpan="5" className="empty-cell">
-                    {loading ? "Loading transactions..." : "No transactions recorded yet."}
+                  <td colSpan="7" className="empty-cell">
+                    {loading ? "Loading transactions..." : "No collection activity recorded yet."}
                   </td>
                 </tr>
               )}
@@ -2068,25 +2773,57 @@ function Dashboard({ setPage, refreshTick, onDataChanged, setHeaderAction, isAdm
 
         {/* Mobile Native Card View */}
         <div className="mobile-only-cards mobile-card-list">
-          {recentRows.length ? (
-            recentRows.map((r, i) => (
-              <div className="mobile-card" key={r.id || i}>
-                <div className="mobile-card-header">
-                  <div>
-                    <h4 className="mobile-card-title">{r.name}</h4>
-                    <span className="mobile-card-sub">{r.mobile}</span>
+          {filteredActivity.length ? (
+            filteredActivity.map((r, i) => {
+              const isPending = r.type === "PENDING_COLLECTED";
+              return (
+                <div
+                  className="mobile-card"
+                  key={r.id || i}
+                  style={isPending ? { borderColor: "#86efac", background: "#f0fdf4" } : {}}
+                >
+                  <div className="mobile-card-header">
+                    <div>
+                      <h4 className="mobile-card-title">{r.customerName}</h4>
+                      <span className="mobile-card-sub">{r.customerMobile}</span>
+                    </div>
+                    <div>
+                      <div className="mobile-card-amount" style={{ color: "#16a34a", fontWeight: 800 }}>
+                        +{money(r.amount)}
+                      </div>
+                      {r.balanceLeft > 0 ? (
+                        <div style={{ fontSize: "11px", color: "#dc2626", fontWeight: 700 }}>
+                          Bal: {money(r.balanceLeft)}
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: "11px", color: "#16a34a", fontWeight: 600 }}>
+                          ✓ Fully Paid
+                        </div>
+                      )}
+                      <div className="mobile-card-date">{formatActivityDate(r.date)}</div>
+                    </div>
                   </div>
-                  <div>
-                    <div className="mobile-card-amount">{money(r.amount || r.total)}</div>
-                    <div className="mobile-card-date">{r.createdAt}</div>
+                  <div className="mobile-card-body">
+                    {isPending ? (
+                      <span className="pill" style={{ background: "#dcfce7", color: "#15803d", fontWeight: 700 }}>
+                        💳 Pending Collected
+                      </span>
+                    ) : (
+                      <span className="pill">{r.typeLabel}</span>
+                    )}
+                    <PaymentModeBadge mode={r.paymentMode} />
+                    <span style={{ fontSize: "11.5px", color: "#64748b" }}>
+                      #{r.invoiceNumber} • Bill Total: {money(r.billTotal)}
+                    </span>
+                    {isPending && r.staffName && (
+                      <span style={{ fontSize: "11px", color: "#64748b" }}>
+                        Staff: {r.staffName}
+                      </span>
+                    )}
                   </div>
                 </div>
-                <div className="mobile-card-body">
-                  <span className="pill">{r.service}</span>
-                  <PaymentModeBadge mode={r.paymentMode} />
-                </div>
-              </div>
-            ))
+              );
+            })
           ) : (
             <div className="empty-cell">
               {loading ? "Loading transactions..." : "No transactions recorded yet."}
@@ -2102,14 +2839,21 @@ function Dashboard({ setPage, refreshTick, onDataChanged, setHeaderAction, isAdm
 // 2. Customers Component (Dynamic Last Visit Computation)
 // =====================================================================
 function Customers({ setPage, refreshTick, onDataChanged, setHeaderAction, isAdmin, userRole, actorInfo, settings, salonId, currentSalon }) {
-  const [customers, setCustomers] = useState([]);
+  const [customers, setCustomers] = useState(() => {
+    const cached = peekCachedQuery(`customers_${salonId || "default"}`);
+    if (cached) return cached;
+    const d = getLocalDemoData();
+    return (d.customers || []).filter(c => (salonId && salonId !== "all") ? (c.salonId || c.salon_id) === salonId : true);
+  });
   const [search, setSearch] = useState("");
   const [viewingCustomer, setViewingCustomer] = useState(null);
   const [editing, setEditing] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => {
+    return !peekCachedQuery(`customers_${salonId || "default"}`) && !getLocalDemoData().customers?.length;
+  });
   const [saving, setSaving] = useState(false);
-  const currentShopName = currentSalon?.name || settings?.shop_name || "NICE LOOKING";
+  const currentShopName = currentSalon?.name || settings?.shop_name || "MY SALON";
 
   useEffect(() => {
     if (setHeaderAction) {
@@ -2126,7 +2870,9 @@ function Customers({ setPage, refreshTick, onDataChanged, setHeaderAction, isAdm
   }, [setPage, setHeaderAction]);
 
   const loadData = useCallback(() => {
-    setLoading(true);
+    if (!customers.length) {
+      setLoading(true);
+    }
     fetchCustomers(salonId)
       .then(data => {
         setCustomers(data || []);
@@ -2136,7 +2882,7 @@ function Customers({ setPage, refreshTick, onDataChanged, setHeaderAction, isAdm
         console.error("Customers load failed:", err);
         setLoading(false);
       });
-  }, [salonId]);
+  }, [salonId, customers.length]);
 
   useEffect(() => {
     loadData();
@@ -2693,6 +3439,7 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
       }
     ],
     discount: "",
+    advanceAmount: "",
     paymentCategory: "Cash",
     onlineSubMethod: "UPI",
     paymentMode: "Cash",
@@ -2700,6 +3447,9 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
     whatsapp: true
   });
   const [existingCustomer, setExistingCustomer] = useState(null);
+  const [customerPendingUdharList, setCustomerPendingUdharList] = useState([]);
+  const [includePreviousDues, setIncludePreviousDues] = useState(false);
+  const [billingSettleInvoice, setBillingSettleInvoice] = useState(null);
   const [done, setDone] = useState(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -2719,12 +3469,14 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
 
   const update = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
-  // Debounced customer lookup by mobile scoped to salonId
+  // Debounced customer lookup & pending udhar check by mobile scoped to salonId
   useEffect(() => {
     let cancelled = false;
     const clean = form.mobile.replace(/\D/g, "");
     if (clean.length < 10) {
       setExistingCustomer(null);
+      setCustomerPendingUdharList([]);
+      setIncludePreviousDues(false);
       return;
     }
 
@@ -2742,6 +3494,10 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
         } else {
           setExistingCustomer(null);
         }
+
+        const udhars = await findCustomerPendingUdhar(clean, salonId);
+        if (cancelled) return;
+        setCustomerPendingUdharList(udhars || []);
       } catch (err) {
         if (!cancelled) console.error("Customer lookup failed:", err);
       }
@@ -2901,6 +3657,49 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
   const discount = Number(form.discount || 0);
   const total = Math.max(0, subtotal - discount);
 
+  // Previous Pending Dues calculation
+  const totalPendingDues = useMemo(() => {
+    return customerPendingUdharList.reduce((sum, u) => sum + Number(u.balanceAmount || 0), 0);
+  }, [customerPendingUdharList]);
+
+  const grandTotalPayable = includePreviousDues ? total + totalPendingDues : total;
+
+  // Advance received and allocation
+  const advance = form.advanceAmount === "" 
+    ? (includePreviousDues ? grandTotalPayable : total) 
+    : Math.max(0, Number(form.advanceAmount || 0));
+
+  // Allocation calculation (FIFO)
+  const allocation = useMemo(() => {
+    if (!includePreviousDues || totalPendingDues <= 0) {
+      return {
+        clearedPrevious: 0,
+        remainingPrevious: 0,
+        appliedToToday: Math.min(advance, total),
+        balanceDueToday: Math.max(0, total - advance),
+        totalRemainingPending: Math.max(0, total - advance)
+      };
+    }
+
+    const clearedPrevious = Math.min(advance, totalPendingDues);
+    const remainingPrevious = Math.max(0, totalPendingDues - clearedPrevious);
+    const remainingAfterPrevious = Math.max(0, advance - clearedPrevious);
+    const appliedToToday = Math.min(remainingAfterPrevious, total);
+    const balanceDueToday = Math.max(0, total - appliedToToday);
+    const totalRemainingPending = remainingPrevious + balanceDueToday;
+
+    return {
+      clearedPrevious,
+      remainingPrevious,
+      appliedToToday,
+      balanceDueToday,
+      totalRemainingPending
+    };
+  }, [includePreviousDues, totalPendingDues, advance, total]);
+
+  const balance = includePreviousDues ? allocation.balanceDueToday : Math.max(0, total - advance);
+  const isUdhar = includePreviousDues ? allocation.totalRemainingPending > 0 : balance > 0;
+
   const discountPercents = [5, 10, 15, 20, 25];
 
   function applyDiscountPercent(pct) {
@@ -2950,20 +3749,76 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
     setSubmitting(true);
     try {
       const activePrefix = currentSalon?.invoice_prefix || settings?.invoice_prefix || "NL";
+
+      let effectiveAdvanceForToday = advance;
+      let effectiveBalanceForToday = balance;
+      let combinedDetailsNote = "";
+
+      if (includePreviousDues && totalPendingDues > 0) {
+        effectiveAdvanceForToday = allocation.appliedToToday;
+        effectiveBalanceForToday = allocation.balanceDueToday;
+        if (allocation.clearedPrevious > 0) {
+          const invNums = customerPendingUdharList.map(u => u.invoiceNumber || u.id).join(", ");
+          combinedDetailsNote = `Combined Payment: ₹${allocation.clearedPrevious.toLocaleString("en-IN")} collected towards previous pending dues (Invoice #${invNums}). Total collected today: ₹${advance.toLocaleString("en-IN")}.`;
+        }
+      }
+
       const invoicePayload = {
         ...form,
+        description: form.description ? `${form.description}\n${combinedDetailsNote}`.trim() : combinedDetailsNote,
         subtotal,
         discount,
         total,
         amount: total,
+        advanceAmount: effectiveAdvanceForToday,
+        balanceAmount: effectiveBalanceForToday,
+        previousDuesCleared: includePreviousDues ? allocation.clearedPrevious : 0,
+        totalPaidToday: advance,
         invoicePrefix: activePrefix
       };
       const created = await createInvoice(invoicePayload, form.items, actorInfo, salonId);
+
+      // Auto-settle previous pending invoices in parallel if combined payment was received
+      if (includePreviousDues && allocation.clearedPrevious > 0) {
+        let remainingToAllocate = allocation.clearedPrevious;
+        const settlePromises = [];
+        for (const oldInv of customerPendingUdharList) {
+          if (remainingToAllocate <= 0) break;
+          const oldBal = Number(oldInv.balanceAmount || 0);
+          if (oldBal <= 0) continue;
+          const payAmt = Math.min(remainingToAllocate, oldBal);
+          settlePromises.push(
+            settleInvoiceBalance(
+              oldInv.id,
+              {
+                amount: payAmt,
+                paymentMode: form.paymentMode,
+                note: `Combined settlement via New Invoice #${created.invoiceNumber || created.id}`
+              },
+              actorInfo,
+              salonId,
+              oldInv
+            ).catch(settleErr => {
+              console.error("Auto settle previous invoice failed:", settleErr);
+            })
+          );
+          remainingToAllocate -= payAmt;
+        }
+        if (settlePromises.length > 0) {
+          await Promise.allSettled(settlePromises);
+        }
+      }
+
       setDone({
         ...created,
         total: created.total || total,
         amount: created.amount || total,
         subtotal: created.subtotal || subtotal,
+        advanceAmount: created.advanceAmount !== undefined ? created.advanceAmount : effectiveAdvanceForToday,
+        balanceAmount: created.balanceAmount !== undefined ? created.balanceAmount : effectiveBalanceForToday,
+        previousDuesCleared: includePreviousDues ? allocation.clearedPrevious : 0,
+        totalPaidToday: advance,
+        totalRemainingPending: includePreviousDues ? allocation.totalRemainingPending : balance,
         sendWhatsApp: form.whatsapp
       });
 
@@ -2986,6 +3841,7 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
           }
         ],
         discount: "",
+        advanceAmount: "",
         paymentCategory: "Cash",
         onlineSubMethod: "UPI",
         paymentMode: "Cash",
@@ -2993,6 +3849,8 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
         whatsapp: true
       });
       setExistingCustomer(null);
+      setIncludePreviousDues(false);
+      setCustomerPendingUdharList([]);
 
       // Refresh product list and global data scoped to salonId
       fetchProducts(salonId).then(setProducts);
@@ -3060,6 +3918,57 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
                 placeholder="Customer address (locality / area)"
               />
             </label>
+
+            {/* Notice if this customer has outstanding pending balance */}
+            {customerPendingUdharList.length > 0 && (
+              <div className="span-2 customer-udhar-alert-card" style={includePreviousDues ? { background: "#f0fdf4", borderColor: "#86efac" } : {}}>
+                <div className="customer-udhar-alert-text">
+                  <strong style={includePreviousDues ? { color: "#166534" } : {}}>
+                    {includePreviousDues ? "✓" : "⚠️"} Customer has {money(totalPendingDues)} Pending Balance!
+                  </strong>
+                  <div style={{ fontSize: "11.5px", marginTop: "2px", color: includePreviousDues ? "#15803d" : "#7c2d12" }}>
+                    {customerPendingUdharList.length === 1 ? (
+                      <span>Outstanding balance on Invoice #{customerPendingUdharList[0].invoiceNumber} ({customerPendingUdharList[0].createdAt}).</span>
+                    ) : (
+                      <span>Outstanding balance across {customerPendingUdharList.length} previous invoices.</span>
+                    )}
+                    {includePreviousDues
+                      ? " Previous dues are now included in today's billing total below."
+                      : " You can add this to today's bill to collect everything together, or settle separately."}
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "center" }}>
+                  <button
+                    type="button"
+                    className="customer-udhar-alert-btn"
+                    style={includePreviousDues ? { background: "#16a34a", borderColor: "#15803d" } : { background: "#2563eb", borderColor: "#1d4ed8" }}
+                    onClick={() => {
+                      const nextState = !includePreviousDues;
+                      setIncludePreviousDues(nextState);
+                      if (nextState) {
+                        update("advanceAmount", String(total + totalPendingDues));
+                      } else {
+                        update("advanceAmount", String(total));
+                      }
+                    }}
+                  >
+                    {includePreviousDues
+                      ? `✓ Included in Today's Bill (+${money(totalPendingDues)})`
+                      : `➕ Add to Today's Bill (+${money(totalPendingDues)})`}
+                  </button>
+
+                  <button
+                    type="button"
+                    className="customer-udhar-alert-btn"
+                    style={{ background: "#ea580c" }}
+                    onClick={() => setBillingSettleInvoice(customerPendingUdharList[0])}
+                    title="Collect previous pending balance separately without adding to new bill"
+                  >
+                    💳 Settle Separately
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Itemized Services & Products Section */}
             <div className="line-items-section">
@@ -3318,6 +4227,127 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
               )}
             </div>
 
+            {/* Advance Amount & Udhar Settlement Section */}
+            <div className="span-2 advance-settlement-section">
+              <div className="advance-header-row">
+                <label className="section-field-label" style={{ fontWeight: 700, color: "#1e293b", fontSize: "13px" }}>
+                  💵 {includePreviousDues ? "Combined Payment Received & Balance" : "Advance Received & Pending Balance"}
+                </label>
+                <div className="advance-chips-group">
+                  <span className="quick-pct-label">Quick Set:</span>
+                  <button
+                    type="button"
+                    className={`discount-chip ${form.advanceAmount === "" || Number(form.advanceAmount) === grandTotalPayable ? "active" : ""}`}
+                    onClick={() => update("advanceAmount", "")}
+                  >
+                    ✓ Full Paid ({money(grandTotalPayable)})
+                  </button>
+                  <button
+                    type="button"
+                    className={`discount-chip ${form.advanceAmount === "0" ? "active" : ""}`}
+                    onClick={() => update("advanceAmount", "0")}
+                  >
+                    ⏳ Full Pending (₹0 Paid)
+                  </button>
+                  {grandTotalPayable >= 500 && (
+                    <button
+                      type="button"
+                      className={`discount-chip ${String(form.advanceAmount) === String(Math.round(grandTotalPayable * 0.5)) ? "active" : ""}`}
+                      onClick={() => update("advanceAmount", String(Math.round(grandTotalPayable * 0.5)))}
+                    >
+                      50% ({money(Math.round(grandTotalPayable * 0.5))})
+                    </button>
+                  )}
+                  {grandTotalPayable >= 1000 && (
+                    <button
+                      type="button"
+                      className={`discount-chip ${String(form.advanceAmount) === String(Math.round(grandTotalPayable * 0.3)) ? "active" : ""}`}
+                      onClick={() => update("advanceAmount", String(Math.round(grandTotalPayable * 0.3)))}
+                    >
+                      30% ({money(Math.round(grandTotalPayable * 0.3))})
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="input-with-symbol advance-input-grid">
+                <span className="input-currency-symbol">₹</span>
+                <input
+                  type="number"
+                  min="0"
+                  max={grandTotalPayable || undefined}
+                  value={form.advanceAmount}
+                  onChange={e => update("advanceAmount", e.target.value)}
+                  placeholder={includePreviousDues ? `Amount received today (Default: Full ${money(grandTotalPayable)})` : `Advance amount received (Default: Full ${money(total)})`}
+                />
+              </div>
+
+              {/* Live Financial Summary Cards */}
+              {includePreviousDues && totalPendingDues > 0 ? (
+                <div className="settlement-summary-cards" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))" }}>
+                  <div className="settlement-card">
+                    <span className="settlement-card-label">Today's Services</span>
+                    <span className="settlement-card-val">{money(total)}</span>
+                  </div>
+                  <div className="settlement-card" style={{ background: "#fffbeb", borderColor: "#fde68a" }}>
+                    <span className="settlement-card-label" style={{ color: "#b45309" }}>Old Dues</span>
+                    <span className="settlement-card-val" style={{ color: "#b45309" }}>+{money(totalPendingDues)}</span>
+                  </div>
+                  <div className="settlement-card" style={{ background: "#eff6ff", borderColor: "#bfdbfe" }}>
+                    <span className="settlement-card-label" style={{ color: "#1d4ed8" }}>Net Payable Today</span>
+                    <span className="settlement-card-val" style={{ color: "#1d4ed8" }}>{money(grandTotalPayable)}</span>
+                  </div>
+                  <div className="settlement-card advance-card">
+                    <span className="settlement-card-label">Received Today</span>
+                    <span className="settlement-card-val">{money(advance)}</span>
+                  </div>
+                  <div className={`settlement-card ${allocation.totalRemainingPending > 0 ? "balance-card-danger" : "balance-card-success"}`}>
+                    <span className="settlement-card-label">{allocation.totalRemainingPending > 0 ? "Net Remaining" : "Balance Due"}</span>
+                    <span className="settlement-card-val">
+                      {allocation.totalRemainingPending > 0 ? money(allocation.totalRemainingPending) : "₹0 (Fully Paid)"}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <div className="settlement-summary-cards">
+                  <div className="settlement-card">
+                    <span className="settlement-card-label">Final Amount</span>
+                    <span className="settlement-card-val">{money(total)}</span>
+                  </div>
+                  <div className="settlement-card advance-card">
+                    <span className="settlement-card-label">Advance Received</span>
+                    <span className="settlement-card-val">{money(advance)}</span>
+                  </div>
+                  <div className={`settlement-card ${isUdhar ? "balance-card-danger" : "balance-card-success"}`}>
+                    <span className="settlement-card-label">{isUdhar ? "Pending Balance" : "Balance Due"}</span>
+                    <span className="settlement-card-val">
+                      {isUdhar ? money(balance) : "₹0 (Fully Paid)"}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {includePreviousDues && totalPendingDues > 0 ? (
+                allocation.totalRemainingPending > 0 ? (
+                  <div className="udhar-alert-banner">
+                    <strong>⚠️ Combined Settlement Breakdown:</strong> ₹{allocation.clearedPrevious.toLocaleString("en-IN")} allocated to clear previous pending dues{allocation.remainingPrevious > 0 ? ` (Remaining old dues: ₹${allocation.remainingPrevious.toLocaleString("en-IN")})` : " (100% Cleared ✓)"}, and ₹{allocation.appliedToToday.toLocaleString("en-IN")} applied to today's bill. Remaining balance pending on today's bill: <strong>{money(allocation.balanceDueToday)}</strong>.
+                  </div>
+                ) : (
+                  <div className="fully-paid-banner">
+                    ✓ Full payment received ({money(grandTotalPayable)}). Previous pending dues ({money(totalPendingDues)}) will be 100% cleared and today's bill is fully paid with ₹0 balance!
+                  </div>
+                )
+              ) : isUdhar ? (
+                <div className="udhar-alert-banner">
+                  <strong>⚠️ Pending Notice:</strong> Customer will have a remaining pending balance of <strong>{money(balance)}</strong> on this bill. They can clear it later without creating a new bill!
+                </div>
+              ) : (
+                <div className="fully-paid-banner">
+                  ✓ Full payment received. Zero balance pending on this invoice.
+                </div>
+              )}
+            </div>
+
             <label className="span-2">
               Invoice Description / Notes <span className="optional">Optional</span>
               <textarea
@@ -3360,6 +4390,7 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
                     }
                   ],
                   discount: "",
+                  advanceAmount: "",
                   paymentCategory: "Cash",
                   onlineSubMethod: "UPI",
                   paymentMode: "Cash",
@@ -3373,7 +4404,7 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
             </button>
             <button className="btn primary" type="submit" disabled={submitting}>
               <FileText size={17} />{" "}
-              {submitting ? "Saving & Deducting Stock..." : `Save & Generate Invoice (${money(total)})`}
+              {submitting ? "Saving & Deducting Stock..." : `Save & Generate Invoice (${money(grandTotalPayable)})`}
             </button>
           </div>
         </section>
@@ -3381,7 +4412,7 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
         {/* Live Invoice Preview Box */}
         <aside className="panel invoice-preview">
           <div className="invoice-logo">
-            <Scissors size={18} /> {currentSalon?.name || settings?.shop_name || "NICE LOOKING"}
+            <Scissors size={18} /> {currentSalon?.name || settings?.shop_name || "MY SALON"}
           </div>
           {(currentSalon?.subtitle || settings?.shop_subtitle) && (
             <div style={{ fontSize: "12px", color: "#64748b", marginTop: "-4px", marginBottom: "8px", fontWeight: 500 }}>
@@ -3435,10 +4466,53 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
             </div>
           )}
           <div className="invoice-total">
-            <span>Total</span>
+            <span>Today's Total</span>
             <strong>{money(total)}</strong>
           </div>
-          <span className="muted small">Payment: {form.paymentMode}</span>
+
+          {includePreviousDues && totalPendingDues > 0 && (
+            <>
+              <div className="invoice-line" style={{ color: "#b45309", background: "#fffbeb", padding: "4px 8px", borderRadius: "6px", marginTop: "4px", fontWeight: 600 }}>
+                <span>Previous Balance Due</span>
+                <strong>+ {money(totalPendingDues)}</strong>
+              </div>
+              <div className="invoice-total" style={{ borderTop: "2px dashed #cbd5e1", paddingTop: "6px", marginTop: "6px" }}>
+                <span style={{ fontWeight: 800, color: "#1e293b" }}>Net Payable Today</span>
+                <strong style={{ fontSize: "18px", color: "#2563eb" }}>{money(grandTotalPayable)}</strong>
+              </div>
+            </>
+          )}
+
+          <div className="invoice-line" style={{ color: "#2563eb", marginTop: "4px" }}>
+            <span>{includePreviousDues ? "Total Received Today" : "Advance Received"}</span>
+            <strong>{money(advance)}</strong>
+          </div>
+
+          {includePreviousDues && totalPendingDues > 0 ? (
+            <div style={{ marginTop: "6px", fontSize: "11px", background: "#f8fafc", padding: "6px 8px", borderRadius: "6px", border: "1px solid #e2e8f0" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", color: allocation.clearedPrevious === totalPendingDues ? "#16a34a" : "#b45309", fontWeight: 600 }}>
+                <span>Old Dues Cleared:</span>
+                <span>{money(allocation.clearedPrevious)} {allocation.clearedPrevious === totalPendingDues ? "✓ (100%)" : `(Bal: ${money(allocation.remainingPrevious)})`}</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", color: allocation.balanceDueToday === 0 ? "#16a34a" : "#dc2626", fontWeight: 600, marginTop: "2px" }}>
+                <span>Today's Bill Balance:</span>
+                <span>{money(allocation.balanceDueToday)}</span>
+              </div>
+            </div>
+          ) : (
+            balance > 0 ? (
+              <div className="invoice-line" style={{ color: "#dc2626", fontWeight: 700, background: "#fef2f2", padding: "4px 8px", borderRadius: "6px", marginTop: "4px" }}>
+                <span>Pending Balance</span>
+                <strong>{money(balance)}</strong>
+              </div>
+            ) : (
+              <div className="invoice-line" style={{ color: "#16a34a", marginTop: "4px" }}>
+                <span>Balance Due</span>
+                <strong>₹0 (Paid)</strong>
+              </div>
+            )
+          )}
+          <span className="muted small" style={{ marginTop: "6px" }}>Payment: {form.paymentMode}</span>
         </aside>
       </form>
 
@@ -3466,25 +4540,97 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
                   </ul>
                 </div>
               )}
+
+              {/* Payment Settlement in Success Modal */}
+              <div style={{ marginTop: "10px", padding: "10px 12px", background: "#f8fafc", borderRadius: "8px", border: "1px solid #e2e8f0" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: "13px", marginBottom: "4px" }}>
+                  <span style={{ color: "#64748b" }}>Today's Bill Total:</span>
+                  <strong>{money(done.total || done.amount)}</strong>
+                </div>
+                {Number(done.previousDuesCleared || 0) > 0 && (
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: "13px", color: "#b45309", marginBottom: "4px" }}>
+                    <span>Previous Dues Cleared:</span>
+                    <strong>+ {money(done.previousDuesCleared)}</strong>
+                  </div>
+                )}
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: "13px", color: "#2563eb", marginBottom: "4px" }}>
+                  <span>{done.previousDuesCleared > 0 ? "Total Collected Today:" : "Advance Received:"}</span>
+                  <strong>{money(done.totalPaidToday !== undefined ? done.totalPaidToday : (done.advanceAmount !== undefined ? done.advanceAmount : done.total))}</strong>
+                </div>
+                {Number(done.balanceAmount || 0) > 0 ? (
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: "13.5px", color: "#dc2626", fontWeight: 800, borderTop: "1px dashed #cbd5e1", paddingTop: "5px" }}>
+                    <span>⚠️ Pending Balance on Today's Bill:</span>
+                    <span>{money(done.balanceAmount)}</span>
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: "12.5px", color: "#16a34a", fontWeight: 700, borderTop: "1px dashed #cbd5e1", paddingTop: "5px" }}>
+                    <span>✓ Payment Status:</span>
+                    <span>Fully Paid (₹0 Balance)</span>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
-          {done.sendWhatsApp && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "14px" }}>
             <button
               className="btn whatsapp full"
               type="button"
-              style={{ marginTop: "12px" }}
-              onClick={() =>
-                openWhatsApp(
-                  invoiceMessage(done, currentSalon || settings),
-                  done.mobile
-                )
-              }
+              onClick={async () => {
+                const res = await shareInvoicePDFOnWhatsApp(done, currentSalon || settings);
+                if (res?.method === "download_and_chat") {
+                  alert("Invoice PDF has been downloaded to your device! WhatsApp opened — simply attach the downloaded PDF in the chat.");
+                }
+              }}
             >
-              <Send size={16} /> Send Itemized Invoice on WhatsApp
+              <Send size={16} /> Send on WhatsApp (with PDF Invoice)
             </button>
-          )}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
+              <button
+                className="btn secondary"
+                type="button"
+                onClick={() => downloadInvoicePDF(done, currentSalon || settings)}
+              >
+                <Download size={15} /> Download PDF
+              </button>
+              <button
+                className="btn secondary"
+                type="button"
+                onClick={() => window.print()}
+              >
+                <Printer size={15} /> Print Receipt
+              </button>
+            </div>
+          </div>
         </Modal>
+      )}
+
+      {billingSettleInvoice && (
+        <SettleUdharModal
+          invoice={billingSettleInvoice}
+          onClose={async () => {
+            setBillingSettleInvoice(null);
+            const clean = (form.mobile || "").replace(/\D/g, "");
+            if (clean.length >= 10) {
+              const remaining = await findCustomerPendingUdhar(clean, salonId);
+              setCustomerPendingUdharList(remaining || []);
+            }
+          }}
+          onSuccess={async (res) => {
+            const clean = (form.mobile || "").replace(/\D/g, "");
+            if (clean.length >= 10) {
+              const remaining = await findCustomerPendingUdhar(clean, salonId);
+              setCustomerPendingUdharList(remaining || []);
+            } else {
+              setCustomerPendingUdharList([]);
+            }
+            if (onDataChanged) onDataChanged();
+          }}
+          actorInfo={actorInfo}
+          salonId={salonId}
+          settings={settings}
+          currentSalon={currentSalon}
+        />
       )}
     </>
   );
@@ -3494,8 +4640,18 @@ function Billing({ refreshTick, onDataChanged, isAdmin, userRole, actorInfo, set
 // 4. Invoices Component (Multi-field Search, View, Void Control, Edit & Audit)
 // =====================================================================
 function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRole, actorInfo, settings, salonId, currentSalon }) {
-  const [invoices, setInvoices] = useState([]);
-  const [products, setProducts] = useState([]);
+  const [invoices, setInvoices] = useState(() => {
+    const cached = peekCachedQuery(`invoices_${salonId || "default"}`);
+    if (cached) return cached;
+    const d = getLocalDemoData();
+    return (d.invoices || []).filter(i => (salonId && salonId !== "all") ? (i.salonId || i.salon_id) === salonId : true);
+  });
+  const [products, setProducts] = useState(() => {
+    const cached = peekCachedQuery(`products_${salonId || "default"}`);
+    if (cached) return cached;
+    const d = getLocalDemoData();
+    return (d.products || []).filter(p => (salonId && salonId !== "all") ? (p.salonId || p.salon_id) === salonId : true);
+  });
   const [search, setSearch] = useState("");
   const [statusTab, setStatusTab] = useState("all"); // "all" | "active" | "voided"
   const [period, setPeriod] = useState("all");
@@ -3507,14 +4663,19 @@ function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
   const [voidReason, setVoidReason] = useState("");
   const [voiding, setVoiding] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => {
+    return !peekCachedQuery(`invoices_${salonId || "default"}`) && !getLocalDemoData().invoices?.length;
+  });
   const [saving, setSaving] = useState(false);
+  const [settlingInvoice, setSettlingInvoice] = useState(null);
 
   const discountPercents = [5, 10, 15, 20, 25];
   const todayISO = useMemo(() => getMumbaiTodayISO(), []);
 
   const loadData = useCallback(() => {
-    setLoading(true);
+    if (!invoices.length) {
+      setLoading(true);
+    }
     Promise.all([fetchInvoices(salonId), fetchProducts(salonId)])
       .then(([invs, prods]) => {
         setInvoices(invs || []);
@@ -3525,7 +4686,7 @@ function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
         console.error("Invoices load failed:", err);
         setLoading(false);
       });
-  }, [salonId]);
+  }, [salonId, invoices.length]);
 
   useEffect(() => {
     loadData();
@@ -3573,6 +4734,7 @@ function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
     return invoices.filter(i => {
       // 1. Status tab filter
       if (statusTab === "active" && i.isVoided) return false;
+      if (statusTab === "udhar" && (i.isVoided || Number(i.balanceAmount || 0) <= 0)) return false;
       if (statusTab === "voided" && !i.isVoided) return false;
 
       // 2. Period filter
@@ -3608,7 +4770,112 @@ function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
   }, [activeFiltered]);
 
   const activeCount = useMemo(() => invoices.filter(i => !i.isVoided).length, [invoices]);
+  const udharCount = useMemo(() => invoices.filter(i => !i.isVoided && Number(i.balanceAmount || 0) > 0).length, [invoices]);
   const voidedCount = useMemo(() => invoices.filter(i => i.isVoided).length, [invoices]);
+  const periodUdhar = useMemo(() => {
+    return activeFiltered.reduce((sum, i) => sum + (Number(i.balanceAmount) || 0), 0);
+  }, [activeFiltered]);
+
+  // Unified Collection Records (Both Initial Bill Advance and Pending Settlement Payments)
+  const allCollectionRecords = useMemo(() => {
+    const list = [];
+    invoices.forEach(inv => {
+      if (inv.isVoided) return;
+
+      const settlements = Array.isArray(inv.settlements) ? inv.settlements : [];
+      const totalSettled = settlements.reduce((sum, s) => sum + Number(s.amount || 0), 0);
+      const totalAdv = Number(inv.advanceAmount !== undefined ? inv.advanceAmount : (inv.total || inv.amount || 0));
+      const initialPaid = Math.max(0, totalAdv - totalSettled);
+
+      // 1. Initial Bill Advance payment
+      if (initialPaid > 0) {
+        list.push({
+          id: `init_${inv.id}`,
+          type: "NEW_BILL",
+          typeLabel: Number(inv.balanceAmount || 0) > 0 ? "Advance Received" : "Full Bill Payment",
+          invoiceId: inv.id,
+          invoiceNumber: inv.invoiceNumber,
+          customerName: inv.name,
+          customerMobile: inv.mobile,
+          service: inv.service,
+          amount: initialPaid,
+          billTotal: Number(inv.total || inv.amount || 0),
+          balanceLeft: Number(inv.balanceAmount || 0),
+          paymentMode: inv.paymentMode || "Cash",
+          date: inv.createdAt,
+          staffName: inv.staffName || "Staff",
+          note: inv.description || "",
+          invoice: inv
+        });
+      }
+
+      // 2. Pending settlements collected
+      settlements.forEach((s, idx) => {
+        const sAmt = Number(s.amount || 0);
+        if (sAmt > 0) {
+          list.push({
+            id: s.id || `stl_${inv.id}_${idx}`,
+            type: "PENDING_COLLECTED",
+            typeLabel: "Pending Cleared",
+            invoiceId: inv.id,
+            invoiceNumber: inv.invoiceNumber,
+            customerName: inv.name,
+            customerMobile: inv.mobile,
+            service: inv.service,
+            amount: sAmt,
+            billTotal: Number(inv.total || inv.amount || 0),
+            balanceLeft: Number(inv.balanceAmount || 0),
+            paymentMode: s.paymentMode || "Cash",
+            date: s.date || inv.createdAt,
+            staffName: s.collectedByName || "Staff",
+            note: s.note || "",
+            invoice: inv
+          });
+        }
+      });
+    });
+
+    return list.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
+  }, [invoices]);
+
+  const pendingSettlementCount = useMemo(() => {
+    return allCollectionRecords.filter(c => c.type === "PENDING_COLLECTED").length;
+  }, [allCollectionRecords]);
+
+  const filteredCollections = useMemo(() => {
+    const q = search.toLowerCase().trim();
+    return allCollectionRecords.filter(c => {
+      // Period filter
+      if (!checkPeriodMatch(c.date)) return false;
+
+      // Search filter
+      if (!q) return true;
+      const matchText = `${c.invoiceNumber || ""} ${c.customerName || ""} ${c.customerMobile || ""} ${c.service || ""} ${c.paymentMode || ""} ${c.staffName || ""} ${c.typeLabel || ""}`.toLowerCase();
+      return matchText.includes(q);
+    });
+  }, [allCollectionRecords, search, period, customStart, customEnd, todayISO]);
+
+  const collectionsPeriodTotal = useMemo(() => {
+    return filteredCollections.reduce((sum, c) => sum + Number(c.amount || 0), 0);
+  }, [filteredCollections]);
+
+  const collectionsPeriodCash = useMemo(() => {
+    return filteredCollections
+      .filter(c => String(c.paymentMode || "").toLowerCase() === "cash")
+      .reduce((sum, c) => sum + Number(c.amount || 0), 0);
+  }, [filteredCollections]);
+
+  const collectionsPeriodOnline = useMemo(() => {
+    return filteredCollections
+      .filter(c => String(c.paymentMode || "").toLowerCase() !== "cash")
+      .reduce((sum, c) => sum + Number(c.amount || 0), 0);
+  }, [filteredCollections]);
+
+  const collectionsPeriodPendingRecovered = useMemo(() => {
+    return filteredCollections
+      .filter(c => c.type === "PENDING_COLLECTED")
+      .reduce((sum, c) => sum + Number(c.amount || 0), 0);
+  }, [filteredCollections]);
 
   const selectedEditProduct = useMemo(() => {
     if (!editing || !editing.productId) return null;
@@ -3623,6 +4890,8 @@ function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
     const sub = Number(inv.subtotal || inv.amount || inv.total || 0);
     const disc = Number(inv.discount || 0);
     const tot = Math.max(0, Number(inv.total ?? (sub - disc)));
+    const adv = inv.advanceAmount !== undefined ? Number(inv.advanceAmount) : tot;
+    const bal = inv.balanceAmount !== undefined ? Number(inv.balanceAmount) : Math.max(0, tot - adv);
     setEditing({
       ...inv,
       name: inv.name || "",
@@ -3637,6 +4906,8 @@ function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
       subtotal: String(sub),
       discount: String(disc),
       total: tot,
+      advanceAmount: String(adv),
+      balanceAmount: bal,
       paymentCategory: isCash ? "Cash" : "Online",
       onlineSubMethod: ["UPI", "Card", "Netbanking"].includes(inv.paymentMode) ? inv.paymentMode : "UPI",
       paymentMode: inv.paymentMode || "Cash",
@@ -3661,7 +4932,16 @@ function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
 
     setSaving(true);
     try {
-      await updateInvoice(editing, selectedEditProduct, actorInfo, salonId);
+      const curTot = Math.max(0, Number(editing.total || (Number(editing.subtotal || editing.amount || 0) - Number(editing.discount || 0))));
+      const curAdv = editing.advanceAmount !== undefined && editing.advanceAmount !== "" ? Number(editing.advanceAmount) : curTot;
+      const curBal = Math.max(0, curTot - curAdv);
+      const updatedPayload = {
+        ...editing,
+        total: curTot,
+        advanceAmount: curAdv,
+        balanceAmount: curBal
+      };
+      await updateInvoice(updatedPayload, selectedEditProduct, actorInfo, salonId);
       setEditing(null);
       loadData();
       if (onDataChanged) onDataChanged();
@@ -3752,7 +5032,7 @@ function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
               )}
             </div>
 
-            {/* Status Filter Segmented Tabs: All, Active, Voided */}
+            {/* Status Filter Segmented Tabs: All, Active, Pending, Voided */}
             <div className="invoice-status-tabs">
               <button
                 type="button"
@@ -3767,6 +5047,13 @@ function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
                 onClick={() => setStatusTab("active")}
               >
                 Active ({activeCount})
+              </button>
+              <button
+                type="button"
+                className={`status-tab udhar-tab ${statusTab === "udhar" ? "active" : ""}`}
+                onClick={() => setStatusTab("udhar")}
+              >
+                Pending ({udharCount})
               </button>
               <button
                 type="button"
@@ -3844,6 +5131,11 @@ function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
             <div className="summary-strip-right">
               <span className="summary-sub-badge">💵 Cash: {money(periodCash)}</span>
               <span className="summary-sub-badge">📱 Online: {money(periodOnline)}</span>
+              {periodUdhar > 0 && (
+                <span className="summary-sub-badge" style={{ background: "#fef3c7", color: "#b45309", borderColor: "#fde68a", fontWeight: 700 }}>
+                  ⚠️ Pending: {money(periodUdhar)}
+                </span>
+              )}
             </div>
           </div>
         </div>
@@ -3860,7 +5152,7 @@ function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
                     <th>Services / Items</th>
                     <th>Wig Product(s)</th>
                     <th>Total</th>
-                    <th>Payment & Status</th>
+                    <th>Payment</th>
                     <th>Date</th>
                     <th style={{ textAlign: "right" }}>Actions</th>
                   </tr>
@@ -3934,6 +5226,11 @@ function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
                             <strong style={i.isVoided ? { textDecoration: "line-through", color: "#94a3b8" } : {}}>
                               {money(i.amount || i.total)}
                             </strong>
+                            {!i.isVoided && Number(i.balanceAmount || 0) > 0 && (
+                              <div style={{ fontSize: "11px", color: "#dc2626", fontWeight: 700, marginTop: "2px" }}>
+                                Pending: {money(i.balanceAmount)}
+                              </div>
+                            )}
                           </td>
                           <td>
                             {i.isVoided ? (
@@ -3963,19 +5260,42 @@ function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
                                 <Eye size={15} />
                               </button>
 
+                              <button
+                                className="icon-action-btn"
+                                style={{ color: "#2563eb" }}
+                                type="button"
+                                title="Download PDF Invoice"
+                                onClick={() => downloadInvoicePDF(i, currentSalon || settings)}
+                              >
+                                <Download size={15} />
+                              </button>
+
                               {!i.isVoided && (
                                 <button
                                   className="icon-action-btn whatsapp-action"
                                   type="button"
-                                  title="Send Itemized Invoice on WhatsApp"
-                                  onClick={() =>
-                                    openWhatsApp(
-                                      invoiceMessage(i, currentSalon || settings),
-                                      i.mobile
-                                    )
-                                  }
+                                  title="Send Itemized Invoice (with PDF) on WhatsApp"
+                                  onClick={async () => {
+                                    const res = await shareInvoicePDFOnWhatsApp(i, currentSalon || settings);
+                                    if (res?.method === "download_and_chat") {
+                                      alert("Invoice PDF downloaded to your device! WhatsApp opened — simply attach the downloaded PDF in the chat.");
+                                    }
+                                  }}
                                 >
                                   <MessageCircle size={15} />
+                                </button>
+                              )}
+
+                              {/* ₹ Collect Pending button: Shown ONLY when 'Pending' tab is selected AND invoice has pending balance */}
+                              {statusTab === "udhar" && !i.isVoided && Number(i.balanceAmount || 0) > 0 && (
+                                <button
+                                  className="icon-action-btn"
+                                  style={{ color: "#b45309", background: "#fef3c7", borderColor: "#fde68a" }}
+                                  type="button"
+                                  title={`Collect Pending Payment (${money(i.balanceAmount)})`}
+                                  onClick={() => setSettlingInvoice(i)}
+                                >
+                                  <IndianRupee size={15} />
                                 </button>
                               )}
 
@@ -4057,6 +5377,11 @@ function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
                           >
                             {money(i.amount || i.total)}
                           </div>
+                          {!i.isVoided && Number(i.balanceAmount || 0) > 0 && (
+                            <div style={{ fontSize: "11px", color: "#dc2626", fontWeight: 700 }}>
+                              Pending: {money(i.balanceAmount)}
+                            </div>
+                          )}
                           <div className="mobile-card-date">{i.createdAt}</div>
                         </div>
                       </div>
@@ -4115,19 +5440,42 @@ function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
                           <Eye size={15} />
                         </button>
 
+                        <button
+                          className="icon-action-btn"
+                          style={{ color: "#2563eb" }}
+                          type="button"
+                          title="Download PDF Invoice"
+                          onClick={() => downloadInvoicePDF(i, currentSalon || settings)}
+                        >
+                          <Download size={15} />
+                        </button>
+
                         {!i.isVoided && (
                           <button
                             className="icon-action-btn whatsapp-action"
                             type="button"
-                            onClick={() =>
-                              openWhatsApp(
-                                invoiceMessage(i, currentSalon || settings),
-                                i.mobile
-                              )
-                            }
-                            title="Send Invoice on WhatsApp"
+                            onClick={async () => {
+                              const res = await shareInvoicePDFOnWhatsApp(i, currentSalon || settings);
+                              if (res?.method === "download_and_chat") {
+                                alert("Invoice PDF downloaded to your device! WhatsApp opened — simply attach the downloaded PDF in the chat.");
+                              }
+                            }}
+                            title="Send Invoice (with PDF) on WhatsApp"
                           >
                             <MessageCircle size={15} />
+                          </button>
+                        )}
+
+                        {/* ₹ Collect Pending button: Shown ONLY when 'Pending' tab is selected AND invoice has pending balance */}
+                        {statusTab === "udhar" && !i.isVoided && Number(i.balanceAmount || 0) > 0 && (
+                          <button
+                            className="icon-action-btn"
+                            style={{ color: "#b45309", background: "#fef3c7", borderColor: "#fde68a" }}
+                            type="button"
+                            title={`Collect Pending Payment (${money(i.balanceAmount)})`}
+                            onClick={() => setSettlingInvoice(i)}
+                          >
+                            <IndianRupee size={15} />
                           </button>
                         )}
 
@@ -4227,12 +5575,35 @@ function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
               </div>
             )}
 
+            {/* If Customer has Udhar (Pending Balance), display prominent warning banner */}
+            {!viewingInvoice.isVoided && Number(viewingInvoice.balanceAmount || 0) > 0 && (
+              <div
+                className="alert warning"
+                style={{
+                  background: "#fffbeb",
+                  color: "#92400e",
+                  borderColor: "#fde68a",
+                  marginBottom: "14px",
+                  padding: "12px 14px",
+                  borderRadius: "8px"
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "6px", fontWeight: "700", fontSize: "13.5px" }}>
+                  <AlertTriangle size={17} />
+                  <span>PENDING BALANCE: {money(viewingInvoice.balanceAmount)}</span>
+                </div>
+                <div style={{ fontSize: "12px", marginTop: "4px" }}>
+                  Final Bill: <strong>{money(viewingInvoice.total || viewingInvoice.amount)}</strong> • Advance Paid: <strong>{money(viewingInvoice.advanceAmount !== undefined ? viewingInvoice.advanceAmount : (viewingInvoice.total || viewingInvoice.amount))}</strong> • Balance Pending: <strong>{money(viewingInvoice.balanceAmount)}</strong>
+                </div>
+              </div>
+            )}
+
             {/* Dynamic Business Shop Header */}
             <div className="view-invoice-shop-header" style={{ marginBottom: "16px", paddingBottom: "12px", borderBottom: "1px solid #e2e8f0" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "10px" }}>
                 <div>
                   <h3 style={{ margin: 0, fontSize: "19px", fontWeight: 800, color: "var(--navy, #0f172a)", letterSpacing: "-0.02em" }}>
-                    {viewingInvoice.shopSettings?.shop_name || settings?.shop_name || "NICE LOOKING"}
+                    {viewingInvoice.shopSettings?.shop_name || settings?.shop_name || "MY SALON"}
                   </h3>
                   {(viewingInvoice.shopSettings?.shop_subtitle || settings?.shop_subtitle) && (
                     <div style={{ fontSize: "13px", color: "#64748b", fontWeight: 500, marginTop: "2px" }}>
@@ -4357,19 +5728,34 @@ function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
                   {money(viewingInvoice.total || viewingInvoice.amount)}
                 </strong>
               </div>
+              <div className="view-invoice-summary-row" style={{ color: "#2563eb", marginTop: "4px" }}>
+                <span>Advance Received</span>
+                <strong>{money(viewingInvoice.advanceAmount !== undefined ? viewingInvoice.advanceAmount : (viewingInvoice.total || viewingInvoice.amount))}</strong>
+              </div>
+              {Number(viewingInvoice.balanceAmount || 0) > 0 ? (
+                <div className="view-invoice-summary-row" style={{ color: "#dc2626", fontWeight: 700, background: "#fef2f2", padding: "6px 8px", borderRadius: "6px", marginTop: "4px" }}>
+                  <span>Pending Balance</span>
+                  <strong>{money(viewingInvoice.balanceAmount)}</strong>
+                </div>
+              ) : (
+                <div className="view-invoice-summary-row" style={{ color: "#16a34a", marginTop: "4px" }}>
+                  <span>Balance Due</span>
+                  <strong>₹0 (Fully Paid)</strong>
+                </div>
+              )}
             </div>
 
             {/* Print-Only Footer Notice */}
             <div className="view-invoice-print-footer">
               <p style={{ margin: 0, fontWeight: 700, color: "#334155", fontSize: "12px" }}>
-                Thank you for visiting {viewingInvoice.shopSettings?.shop_name || settings?.shop_name || "Nice Looking"}!
+                Thank you for visiting {viewingInvoice.shopSettings?.shop_name || settings?.shop_name || "MY SALON"}!
               </p>
               <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "#64748b" }}>
                 This is a computer-generated invoice and requires no signature.
               </p>
             </div>
 
-            <div className="form-actions no-print">
+            <div className="form-actions no-print" style={{ flexWrap: "wrap", gap: "8px" }}>
               <button
                 className="btn secondary"
                 type="button"
@@ -4385,18 +5771,40 @@ function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
               >
                 <Printer size={15} /> Print Invoice
               </button>
+              <button
+                className="btn secondary"
+                type="button"
+                title="Download Official PDF Invoice"
+                onClick={() => downloadInvoicePDF(viewingInvoice, currentSalon || settings)}
+              >
+                <Download size={15} /> Download PDF
+              </button>
+              {!viewingInvoice.isVoided && Number(viewingInvoice.balanceAmount || 0) > 0 && (
+                <button
+                  className="btn primary"
+                  type="button"
+                  style={{ background: "#16a34a", borderColor: "#16a34a" }}
+                  onClick={() => {
+                    const inv = viewingInvoice;
+                    setViewingInvoice(null);
+                    setSettlingInvoice(inv);
+                  }}
+                >
+                  <IndianRupee size={15} /> Collect Pending ({money(viewingInvoice.balanceAmount)})
+                </button>
+              )}
               {!viewingInvoice.isVoided && (
                 <button
                   className="btn whatsapp"
                   type="button"
-                  onClick={() =>
-                    openWhatsApp(
-                      invoiceMessage(viewingInvoice, currentSalon || settings),
-                      viewingInvoice.mobile
-                    )
-                  }
+                  onClick={async () => {
+                    const res = await shareInvoicePDFOnWhatsApp(viewingInvoice, currentSalon || settings);
+                    if (res?.method === "download_and_chat") {
+                      alert("Invoice PDF downloaded to your device! WhatsApp opened — simply attach the downloaded PDF in the chat.");
+                    }
+                  }}
                 >
-                  <Send size={15} /> Send on WhatsApp
+                  <Send size={15} /> Send on WhatsApp (PDF)
                 </button>
               )}
             </div>
@@ -4763,6 +6171,56 @@ function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
                 )}
               </div>
 
+              {/* Advance & Pending Balance in Edit Invoice Modal */}
+              <div className="span-2" style={{ marginTop: "4px", marginBottom: "6px", padding: "12px", background: "#f8fafc", borderRadius: "10px", border: "1px solid #e2e8f0" }}>
+                <label style={{ margin: "0 0 6px 0", fontWeight: 700, fontSize: "12.5px", color: "#1e293b" }}>
+                  Advance Paid & Pending Balance
+                </label>
+                <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "8px" }}>
+                  <button
+                    type="button"
+                    className="discount-chip"
+                    onClick={() => {
+                      const curTot = Math.max(0, Number(editing.amount || editing.subtotal || 0) - Number(editing.discount || 0));
+                      setEditing(x => ({ ...x, advanceAmount: String(curTot) }));
+                    }}
+                  >
+                    Mark Fully Paid ({money(Math.max(0, Number(editing.amount || editing.subtotal || 0) - Number(editing.discount || 0)))})
+                  </button>
+                  <button
+                    type="button"
+                    className="discount-chip"
+                    onClick={() => setEditing(x => ({ ...x, advanceAmount: "0" }))}
+                  >
+                    Full Pending (₹0 Paid)
+                  </button>
+                </div>
+                <div className="input-with-symbol">
+                  <span className="input-currency-symbol">₹</span>
+                  <input
+                    type="number"
+                    min="0"
+                    value={editing.advanceAmount ?? ""}
+                    onChange={e => setEditing(x => ({ ...x, advanceAmount: e.target.value }))}
+                    placeholder="Advance amount received"
+                  />
+                </div>
+                {(() => {
+                  const curTot = Math.max(0, Number(editing.amount || editing.subtotal || 0) - Number(editing.discount || 0));
+                  const curAdv = editing.advanceAmount === "" || editing.advanceAmount === undefined ? curTot : Number(editing.advanceAmount || 0);
+                  const curBal = Math.max(0, curTot - curAdv);
+                  return curBal > 0 ? (
+                    <div style={{ marginTop: "8px", fontSize: "12px", color: "#dc2626", fontWeight: 700 }}>
+                      ⚠️ Remaining Pending Balance Due: ₹{curBal.toLocaleString("en-IN")}
+                    </div>
+                  ) : (
+                    <div style={{ marginTop: "8px", fontSize: "12px", color: "#16a34a", fontWeight: 600 }}>
+                      ✓ Full payment received — Zero balance pending (₹0).
+                    </div>
+                  );
+                })()}
+              </div>
+
               <label className="span-2">
                 Description / Notes
                 <textarea
@@ -4826,6 +6284,21 @@ function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
           </div>
         </Modal>
       )}
+
+      {settlingInvoice && (
+        <SettleUdharModal
+          invoice={settlingInvoice}
+          onClose={() => setSettlingInvoice(null)}
+          onSuccess={() => {
+            loadData();
+            if (onDataChanged) onDataChanged();
+          }}
+          actorInfo={actorInfo}
+          salonId={salonId}
+          settings={settings}
+          currentSalon={currentSalon}
+        />
+      )}
     </>
   );
 }
@@ -4834,12 +6307,19 @@ function Invoices({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
 // 5. Wig Products Component (Supabase CRUD & Exact Sizes)
 // =====================================================================
 function Products({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRole, actorInfo, salonId, currentSalon }) {
-  const [products, setProducts] = useState([]);
+  const [products, setProducts] = useState(() => {
+    const cached = peekCachedQuery(`products_${salonId || "default"}`);
+    if (cached) return cached;
+    const d = getLocalDemoData();
+    return (d.products || []).filter(p => (salonId && salonId !== "all") ? (p.salonId || p.salon_id) === salonId : true);
+  });
   const [modal, setModal] = useState(false);
   const [editing, setEditing] = useState(null);
   const [isEditing, setIsEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => {
+    return !peekCachedQuery(`products_${salonId || "default"}`) && !getLocalDemoData().products?.length;
+  });
   const [saving, setSaving] = useState(false);
 
   const blank = {
@@ -4853,7 +6333,9 @@ function Products({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
   };
 
   const loadData = useCallback(async () => {
-    setLoading(true);
+    if (!products.length) {
+      setLoading(true);
+    }
     try {
       const prods = await fetchProducts(salonId);
       setProducts(prods || []);
@@ -4864,7 +6346,7 @@ function Products({ refreshTick, onDataChanged, setHeaderAction, isAdmin, userRo
     } finally {
       setLoading(false);
     }
-  }, [salonId]);
+  }, [salonId, products.length]);
 
   useEffect(() => {
     loadData();
@@ -5410,7 +6892,7 @@ function WhatsAppPage({ refreshTick, setHeaderAction, settings, salonId, current
   const [optInFilter, setOptInFilter] = useState("all");
   const [loading, setLoading] = useState(true);
 
-  const shopName = currentSalon?.name || settings?.shop_name || "NICE LOOKING";
+  const shopName = currentSalon?.name || settings?.shop_name || "MY SALON";
   const shopSubtitle = currentSalon?.subtitle || settings?.shop_subtitle || "Hair Wig & Hair Services";
 
   useEffect(() => {
@@ -5869,7 +7351,7 @@ function Reports({ refreshTick, setHeaderAction, salonId, currentSalon, actorInf
 // =====================================================================
 function SettingsPage({ actorInfo, isAdmin = true, onSettingsSaved, salonId, currentSalon }) {
   const [form, setForm] = useState({
-    shop_name: "NICE LOOKING",
+    shop_name: "MY SALON",
     shop_subtitle: "Hair Wig & Hair Services",
     shop_mobile: "+91 98765 43210",
     shop_address: "Mumbai, Maharashtra",
@@ -5989,7 +7471,7 @@ function SettingsPage({ actorInfo, isAdmin = true, onSettingsSaved, salonId, cur
                 disabled={!isSuperAdmin}
                 value={form.shop_name || ""}
                 onChange={e => setForm({ ...form, shop_name: e.target.value })}
-                placeholder="NICE LOOKING"
+                placeholder="MY SALON"
                 style={!isSuperAdmin ? { background: "#f8fafc", cursor: "not-allowed", color: "#64748b", borderColor: "#e2e8f0" } : {}}
               />
               {!isSuperAdmin && (

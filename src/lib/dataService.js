@@ -39,13 +39,13 @@ function saveLocalCredential(email, password, extra = {}) {
 export const defaultSalonsList = [
   {
     id: "default",
-    name: "NICE LOOKING (Main Branch)",
-    slug: "nice-looking-main",
+    name: "MY SALON (Main Branch)",
+    slug: "my-salon-main",
     subtitle: "Hair Wig & Hair Services",
     mobile: "+91 98765 43210",
     email: "sameershaikh584@gmail.com",
     address: "Shop 4, Hill Road, Bandra West, Mumbai",
-    invoice_prefix: "NL",
+    invoice_prefix: "MS",
     whatsapp_number: "919876543210",
     status: "ACTIVE",
     owner_name: "Sameer Shaikh",
@@ -54,8 +54,61 @@ export const defaultSalonsList = [
   }
 ];
 
+// =====================================================================
+// High-Performance In-Memory Query Cache & In-Flight Promise Deduplication
+// =====================================================================
+const queryCache = new Map();
+const inFlightRequests = new Map();
+const DEFAULT_CACHE_TTL_MS = 120000; // 2 minutes TTL for instant tab switches
+
+export function getCachedQuery(key, maxAgeMs = DEFAULT_CACHE_TTL_MS) {
+  const item = queryCache.get(key);
+  if (!item) return null;
+  if (Date.now() - item.timestamp > maxAgeMs) {
+    queryCache.delete(key);
+    return null;
+  }
+  return item.data;
+}
+
+export function peekCachedQuery(key) {
+  const item = queryCache.get(key);
+  return item ? item.data : null;
+}
+
+export function setCachedQuery(key, data) {
+  queryCache.set(key, { data, timestamp: Date.now() });
+}
+
+export function invalidateQueryCache(prefix) {
+  if (!prefix) {
+    queryCache.clear();
+    return;
+  }
+  for (const k of queryCache.keys()) {
+    if (k.startsWith(prefix) || k.includes(prefix)) {
+      queryCache.delete(k);
+    }
+  }
+}
+
+export async function deduplicateRequest(key, fetcher) {
+  if (inFlightRequests.has(key)) {
+    return inFlightRequests.get(key);
+  }
+  const promise = (async () => {
+    try {
+      return await fetcher();
+    } finally {
+      inFlightRequests.delete(key);
+    }
+  })();
+  inFlightRequests.set(key, promise);
+  return promise;
+}
+
 // Production Multi-Tenant Cache Store
-function getLocalDemoData() {
+export function getLocalDemoData() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) {
@@ -89,7 +142,13 @@ function getLocalSalons() {
       localStorage.setItem(SALONS_STORAGE_KEY, JSON.stringify(defaultSalonsList));
       return defaultSalonsList;
     }
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    return (parsed || []).map(s => {
+      if (s.id === "default" && s.name && s.name.includes("NICE LOOKING")) {
+        return { ...s, name: s.name.replace(/NICE LOOKING/g, "MY SALON") };
+      }
+      return s;
+    });
   } catch {
     return defaultSalonsList;
   }
@@ -185,52 +244,59 @@ export async function fetchSalons(userRole = "superadmin", userSalonId = "defaul
   const normRole = (userRole || "staff").toLowerCase();
   const isSuper = normRole === "superadmin" || normRole === "super_admin";
   const cleanEmail = (userEmail || "").trim().toLowerCase();
+  const cacheKey = `salons_${normRole}_${userSalonId}_${cleanEmail}`;
 
-  let remoteSalons = null;
-  if (supabaseConfigured) {
-    try {
-      const { data, error } = await supabase
-        .from("salons")
-        .select("*")
-        .order("created_at", { ascending: true });
+  const cached = getCachedQuery(cacheKey);
+  if (cached) return cached;
 
-      if (!error && Array.isArray(data) && data.length > 0) {
-        remoteSalons = data;
+  return deduplicateRequest(cacheKey, async () => {
+    let remoteSalons = null;
+    if (supabaseConfigured) {
+      try {
+        const { data, error } = await supabase
+          .from("salons")
+          .select("*")
+          .order("created_at", { ascending: true });
+
+        if (!error && Array.isArray(data) && data.length > 0) {
+          remoteSalons = data;
+        }
+      } catch (err) {
+        console.warn("fetchSalons Supabase query failed, using local cache:", err);
       }
-    } catch (err) {
-      console.warn("fetchSalons Supabase query failed, using local cache:", err);
     }
-  }
 
-  // Merge remote with local salons so no newly created branch is lost
-  const localSalons = getLocalSalons();
-  let mergedSalons = [...localSalons];
+    // Merge remote with local salons so no newly created branch is lost
+    const localSalons = getLocalSalons();
+    let mergedSalons = [...localSalons];
 
-  if (Array.isArray(remoteSalons) && remoteSalons.length > 0) {
-    const localMap = new Map(localSalons.map(s => [s.id, s]));
-    remoteSalons.forEach(s => {
-      localMap.set(s.id, { ...(localMap.get(s.id) || {}), ...s });
-    });
-    mergedSalons = Array.from(localMap.values());
-    saveLocalSalons(mergedSalons);
-  }
+    if (Array.isArray(remoteSalons) && remoteSalons.length > 0) {
+      const localMap = new Map(localSalons.map(s => [s.id, s]));
+      remoteSalons.forEach(s => {
+        localMap.set(s.id, { ...(localMap.get(s.id) || {}), ...s });
+      });
+      mergedSalons = Array.from(localMap.values());
+      saveLocalSalons(mergedSalons);
+    }
 
-  if (isSuper) {
-    return mergedSalons;
-  }
+    let result = mergedSalons;
+    if (!isSuper) {
+      const assignedList = Array.isArray(assignedSalons) ? assignedSalons : [];
+      result = mergedSalons.filter(s => {
+        // 1. Direct active salon ID
+        if (userSalonId && s.id === userSalonId) return true;
+        // 2. In assigned salons array
+        if (assignedList.includes(s.id)) return true;
+        // 3. Owned branch matching owner email
+        if (cleanEmail && s.owner_email && s.owner_email.trim().toLowerCase() === cleanEmail) return true;
+        // 4. Contact email match
+        if (cleanEmail && s.email && s.email.trim().toLowerCase() === cleanEmail) return true;
+        return false;
+      });
+    }
 
-  const assignedList = Array.isArray(assignedSalons) ? assignedSalons : [];
-
-  return mergedSalons.filter(s => {
-    // 1. Direct active salon ID
-    if (userSalonId && s.id === userSalonId) return true;
-    // 2. In assigned salons array
-    if (assignedList.includes(s.id)) return true;
-    // 3. Owned branch matching owner email
-    if (cleanEmail && s.owner_email && s.owner_email.trim().toLowerCase() === cleanEmail) return true;
-    // 4. Contact email match
-    if (cleanEmail && s.email && s.email.trim().toLowerCase() === cleanEmail) return true;
-    return false;
+    setCachedQuery(cacheKey, result);
+    return result;
   });
 }
 
@@ -389,6 +455,7 @@ export async function saveSalon(salonData, actorInfo = null) {
     details: `${isNew ? "Created" : "Updated"} Salon Branch: ${payload.name} (${payload.invoice_prefix})`
   }).catch(() => {});
 
+  invalidateQueryCache("salons");
   return finalSavedSalon;
 }
 
@@ -463,6 +530,7 @@ export async function deleteSalon(salonId, actorInfo = null) {
     details: `Permanently deleted Salon Branch ID: ${salonId}`
   }).catch(() => {});
 
+  invalidateQueryCache("salons");
   return true;
 }
 
@@ -1547,10 +1615,13 @@ export async function findCustomerByMobile(rawMobile, salonId = "default") {
 // -------------------------------------------------------------
 // Database Auto-Sync Helper for Salon Branches (Foreign Key Resilience)
 // -------------------------------------------------------------
+const verifiedSalonsCache = new Set();
+
 export async function ensureSalonInDatabase(salonId = "default") {
   if (!supabaseConfigured || !salonId) return true;
   const targetId = String(salonId).trim();
   if (!targetId) return true;
+  if (verifiedSalonsCache.has(targetId)) return true;
 
   try {
     const { data, error } = await supabase
@@ -1560,6 +1631,7 @@ export async function ensureSalonInDatabase(salonId = "default") {
       .maybeSingle();
 
     if (!error && data?.id) {
+      verifiedSalonsCache.add(targetId);
       return true;
     }
 
@@ -1567,7 +1639,7 @@ export async function ensureSalonInDatabase(salonId = "default") {
     const found = localSalons.find(s => s.id === targetId);
 
     const fallbackName = targetId === "default"
-      ? "NICE LOOKING (Bandra)"
+      ? "MY SALON (Bandra)"
       : targetId.replace(/^salon-/, "").replace(/-\w{4,}$/, "").replace(/-/g, " ").toUpperCase() || "Salon Branch";
 
     const payload = {
@@ -1589,6 +1661,7 @@ export async function ensureSalonInDatabase(salonId = "default") {
 
     const { error: upsErr } = await supabase.from("salons").upsert(payload);
     if (!upsErr) {
+      verifiedSalonsCache.add(targetId);
       return true;
     }
   } catch (err) {
@@ -1602,86 +1675,96 @@ export async function ensureSalonInDatabase(salonId = "default") {
 // -------------------------------------------------------------
 
 export async function fetchCustomers(salonId = "default") {
-  let remoteCustomers = null;
-  if (supabaseConfigured) {
-    try {
-      let query = supabase.from("customers").select("*").order("created_at", { ascending: false });
-      if (salonId && salonId !== "all") {
-        query = query.eq("salon_id", salonId);
+  const cacheKey = `customers_${salonId || "default"}`;
+  const cached = getCachedQuery(cacheKey);
+  if (cached) return cached;
+
+  return deduplicateRequest(cacheKey, async () => {
+    let remoteCustomers = null;
+    if (supabaseConfigured) {
+      try {
+        let query = supabase.from("customers").select("*").order("created_at", { ascending: false });
+        if (salonId && salonId !== "all") {
+          query = query.eq("salon_id", salonId);
+        }
+        const { data, error } = await query;
+        if (!error && Array.isArray(data)) {
+          remoteCustomers = data.map(c => ({
+            id: String(c.id),
+            salonId: c.salon_id || salonId,
+            salon_id: c.salon_id || salonId,
+            name: c.name,
+            mobile: c.mobile,
+            address: c.address || "",
+            whatsapp_opt_in: c.whatsapp_opt_in !== false,
+            createdAt: c.created_at
+          }));
+        }
+      } catch (err) {
+        console.warn("fetchCustomers Supabase error:", err);
       }
-      const { data, error } = await query;
-      if (!error && Array.isArray(data)) {
-        remoteCustomers = data.map(c => ({
-          id: String(c.id),
-          salonId: c.salon_id || salonId,
-          salon_id: c.salon_id || salonId,
-          name: c.name,
-          mobile: c.mobile,
-          address: c.address || "",
-          whatsapp_opt_in: c.whatsapp_opt_in !== false,
-          createdAt: c.created_at
-        }));
-      }
-    } catch (err) {
-      console.warn("fetchCustomers Supabase error:", err);
     }
-  }
 
-  // Merge remote with local so no customer is lost
-  const d = getLocalDemoData();
-  const rawLocal = (d.customers || []).map(c => ({
-    id: String(c.id),
-    salonId: c.salon_id || c.salonId || "default",
-    salon_id: c.salon_id || c.salonId || "default",
-    name: c.name,
-    mobile: c.mobile,
-    address: c.address || "",
-    whatsapp_opt_in: c.whatsapp_opt_in !== false,
-    createdAt: c.createdAt || c.created_at || new Date().toISOString()
-  }));
+    // Merge remote with local so no customer is lost
+    const d = getLocalDemoData();
+    const rawLocal = (d.customers || []).map(c => ({
+      id: String(c.id),
+      salonId: c.salon_id || c.salonId || "default",
+      salon_id: c.salon_id || c.salonId || "default",
+      name: c.name,
+      mobile: c.mobile,
+      address: c.address || "",
+      whatsapp_opt_in: c.whatsapp_opt_in !== false,
+      createdAt: c.createdAt || c.created_at || new Date().toISOString()
+    }));
 
-  const custMap = new Map();
-  rawLocal.forEach(c => custMap.set(String(c.id), c));
-  if (Array.isArray(remoteCustomers)) {
-    remoteCustomers.forEach(c => custMap.set(String(c.id), c));
-  }
-  let allMerged = Array.from(custMap.values());
-  if (salonId && salonId !== "all") {
-    allMerged = allMerged.filter(c => (c.salonId || c.salon_id || "default") === salonId);
-  }
+    const custMap = new Map();
+    rawLocal.forEach(c => custMap.set(String(c.id), c));
+    if (Array.isArray(remoteCustomers)) {
+      remoteCustomers.forEach(c => custMap.set(String(c.id), c));
+    }
+    let allMerged = Array.from(custMap.values());
+    if (salonId && salonId !== "all") {
+      allMerged = allMerged.filter(c => (c.salonId || c.salon_id || "default") === salonId);
+    }
 
-  // Enrich customer statistics with invoice history
-  try {
-    const allInvoices = await fetchInvoices(salonId);
-    return allMerged.map(c => {
-      const cNorm = normalizeWhatsAppNumber(c.mobile);
-      const c10 = (c.mobile || "").replace(/\D/g, "").slice(-10);
-      const cInvoices = allInvoices.filter(inv => {
-        const inv10 = (inv.mobile || inv.customerMobile || "").replace(/\D/g, "").slice(-10);
-        const invNorm = normalizeWhatsAppNumber(inv.mobile || inv.customerMobile);
-        return (c10 && inv10 && c10 === inv10) || (cNorm && invNorm && cNorm === invNorm) || (inv.customerId && String(inv.customerId) === String(c.id));
+    // Enrich customer statistics with invoice history
+    let enriched = allMerged;
+    try {
+      const allInvoices = await fetchInvoices(salonId);
+      enriched = allMerged.map(c => {
+        const cNorm = normalizeWhatsAppNumber(c.mobile);
+        const c10 = (c.mobile || "").replace(/\D/g, "").slice(-10);
+        const cInvoices = allInvoices.filter(inv => {
+          const inv10 = (inv.mobile || inv.customerMobile || "").replace(/\D/g, "").slice(-10);
+          const invNorm = normalizeWhatsAppNumber(inv.mobile || inv.customerMobile);
+          return (c10 && inv10 && c10 === inv10) || (cNorm && invNorm && cNorm === invNorm) || (inv.customerId && String(inv.customerId) === String(c.id));
+        });
+
+        const validInvs = cInvoices.filter(i => !i.isVoided && i.status !== "VOIDED");
+        const totalSpent = validInvs.reduce((acc, i) => acc + Number(i.total || i.amount || 0), 0);
+        const sortedInvs = [...cInvoices].sort((a, b) => new Date(b.createdAt || b.invoice_date || 0) - new Date(a.createdAt || a.invoice_date || 0));
+        const lastVisit = sortedInvs[0]?.createdAt || c.createdAt || "—";
+        const lastService = sortedInvs[0]?.service || "Hair Wig";
+
+        return {
+          ...c,
+          invoices: sortedInvs,
+          visitCount: cInvoices.length,
+          totalSpent,
+          amount: totalSpent,
+          lastVisit,
+          lastService,
+          hasInvoices: cInvoices.length > 0
+        };
       });
+    } catch {
+      enriched = allMerged;
+    }
 
-      const validInvs = cInvoices.filter(i => !i.isVoided && i.status !== "VOIDED");
-      const totalSpent = validInvs.reduce((acc, i) => acc + Number(i.total || i.amount || 0), 0);
-      const sortedInvs = [...cInvoices].sort((a, b) => new Date(b.createdAt || b.invoice_date || 0) - new Date(a.createdAt || a.invoice_date || 0));
-      const lastVisit = sortedInvs[0]?.createdAt || c.createdAt || "—";
-      const lastService = sortedInvs[0]?.service || "Hair Wig";
-
-      return {
-        ...c,
-        invoices: sortedInvs,
-        visitCount: cInvoices.length,
-        totalSpent,
-        amount: totalSpent,
-        lastVisit,
-        lastService,
-        hasInvoices: cInvoices.length > 0
-      };
-    });
-  } catch {
-    return allMerged;
-  }
+    setCachedQuery(cacheKey, enriched);
+    return enriched;
+  });
 }
 
 export async function saveCustomer(customerData, actorInfo = null, salonId = "default") {
@@ -1818,6 +1901,7 @@ export async function saveCustomer(customerData, actorInfo = null, salonId = "de
     d.customers.unshift(localCust);
   }
   saveLocalDemoData(d);
+  invalidateQueryCache("customers");
 
   return finalSaved || localCust;
 }
@@ -1849,6 +1933,7 @@ export async function deleteCustomer(customerId, actorInfo = null, salonId = "de
   const d = getLocalDemoData();
   d.customers = (d.customers || []).filter(c => String(c.id) !== String(customerId));
   saveLocalDemoData(d);
+  invalidateQueryCache("customers");
   return true;
 }
 
@@ -1856,66 +1941,73 @@ export async function deleteCustomer(customerId, actorInfo = null, salonId = "de
 // Products / Wig Inventory (Scoped per Salon)
 // -------------------------------------------------------------
 export async function fetchProducts(salonId = "default") {
-  let remoteProducts = null;
+  const cacheKey = `products_${salonId || "default"}`;
+  const cached = getCachedQuery(cacheKey);
+  if (cached) return cached;
 
-  if (supabaseConfigured) {
-    try {
-      let query = supabase.from("wig_products").select("*").order("product_name", { ascending: true });
-      if (salonId && salonId !== "all") {
-        query = query.eq("salon_id", salonId);
+  return deduplicateRequest(cacheKey, async () => {
+    let remoteProducts = null;
+
+    if (supabaseConfigured) {
+      try {
+        let query = supabase.from("wig_products").select("*").order("product_name", { ascending: true });
+        if (salonId && salonId !== "all") {
+          query = query.eq("salon_id", salonId);
+        }
+        const { data, error } = await query;
+        if (!error && Array.isArray(data)) {
+          remoteProducts = data.map(p => ({
+            id: String(p.id),
+            salonId: p.salon_id || salonId,
+            salon_id: p.salon_id || salonId,
+            name: p.product_name || p.name || "Wig Product",
+            product_name: p.product_name || p.name || "Wig Product",
+            type: p.hair_type || p.type || "Human Hair",
+            hair_type: p.hair_type || p.type || "Human Hair",
+            color: p.color || "Natural Black",
+            size: p.size || "5x7",
+            price: Number(p.price || 0),
+            stock: Number(p.stock || 0),
+            active: p.active !== false
+          }));
+        }
+      } catch (err) {
+        console.warn("fetchProducts Supabase error:", err);
       }
-      const { data, error } = await query;
-      if (!error && Array.isArray(data)) {
-        remoteProducts = data.map(p => ({
-          id: String(p.id),
-          salonId: p.salon_id || salonId,
-          salon_id: p.salon_id || salonId,
-          name: p.product_name || p.name || "Wig Product",
-          product_name: p.product_name || p.name || "Wig Product",
-          type: p.hair_type || p.type || "Human Hair",
-          hair_type: p.hair_type || p.type || "Human Hair",
-          color: p.color || "Natural Black",
-          size: p.size || "5x7",
-          price: Number(p.price || 0),
-          stock: Number(p.stock || 0),
-          active: p.active !== false
-        }));
-      }
-    } catch (err) {
-      console.warn("fetchProducts Supabase error:", err);
     }
-  }
 
-  // Local / Demo Data
-  const d = getLocalDemoData();
-  const rawLocal = (d.products || []).map(p => ({
-    id: String(p.id),
-    salonId: p.salon_id || p.salonId || "default",
-    salon_id: p.salon_id || p.salonId || "default",
-    name: p.product_name || p.name || "Wig Product",
-    product_name: p.product_name || p.name || "Wig Product",
-    type: p.hair_type || p.type || "Human Hair",
-    hair_type: p.hair_type || p.type || "Human Hair",
-    color: p.color || "Natural Black",
-    size: p.size || "5x7",
-    price: Number(p.price || 0),
-    stock: Number(p.stock || 0),
-    active: p.active !== false
-  }));
+    // Local / Demo Data
+    const d = getLocalDemoData();
+    const rawLocal = (d.products || []).map(p => ({
+      id: String(p.id),
+      salonId: p.salon_id || p.salonId || "default",
+      salon_id: p.salon_id || p.salonId || "default",
+      name: p.product_name || p.name || "Wig Product",
+      product_name: p.product_name || p.name || "Wig Product",
+      type: p.hair_type || p.type || "Human Hair",
+      hair_type: p.hair_type || p.type || "Human Hair",
+      color: p.color || "Natural Black",
+      size: p.size || "5x7",
+      price: Number(p.price || 0),
+      stock: Number(p.stock || 0),
+      active: p.active !== false
+    }));
 
-  // Merge remote and local so newly added products are never lost
-  const prodMap = new Map();
-  rawLocal.forEach(p => prodMap.set(String(p.id), p));
-  if (Array.isArray(remoteProducts)) {
-    remoteProducts.forEach(p => prodMap.set(String(p.id), p));
-  }
+    // Merge remote and local so newly added products are never lost
+    const prodMap = new Map();
+    rawLocal.forEach(p => prodMap.set(String(p.id), p));
+    if (Array.isArray(remoteProducts)) {
+      remoteProducts.forEach(p => prodMap.set(String(p.id), p));
+    }
 
-  const allMerged = Array.from(prodMap.values());
-
-  if (salonId && salonId !== "all") {
-    return allMerged.filter(p => (p.salonId || p.salon_id || "default") === salonId);
-  }
-  return allMerged;
+    const allMerged = Array.from(prodMap.values());
+    let result = allMerged;
+    if (salonId && salonId !== "all") {
+      result = allMerged.filter(p => (p.salonId || p.salon_id || "default") === salonId);
+    }
+    setCachedQuery(cacheKey, result);
+    return result;
+  });
 }
 
 export async function saveProduct(product, actorInfo = null, salonId = "default") {
@@ -2078,6 +2170,7 @@ export async function saveProduct(product, actorInfo = null, salonId = "default"
     d.products.unshift(localProd);
   }
   saveLocalDemoData(d);
+  invalidateQueryCache("products");
 
   return finalSaved || localProd;
 }
@@ -2109,6 +2202,7 @@ export async function deleteProduct(productId, actorInfo = null, salonId = "defa
   const d = getLocalDemoData();
   d.products = (d.products || []).filter(p => String(p.id) !== String(productId));
   saveLocalDemoData(d);
+  invalidateQueryCache("products");
   return true;
 }
 
@@ -2133,10 +2227,20 @@ export function parseVoidStatus(inv) {
 function parseItemsFromInvoice(rawDesc, invRecord) {
   let items = [];
   let userNote = "";
+  let paymentMeta = null;
 
   if (rawDesc && typeof rawDesc === "string") {
-    if (rawDesc.includes("---ITEMS_JSON---")) {
-      const parts = rawDesc.split("---ITEMS_JSON---");
+    let cleanText = rawDesc;
+    if (cleanText.includes("---PAYMENT_META---")) {
+      const pParts = cleanText.split("---PAYMENT_META---");
+      cleanText = pParts[0] || "";
+      try {
+        paymentMeta = JSON.parse(pParts[1]?.trim() || "null");
+      } catch {}
+    }
+
+    if (cleanText.includes("---ITEMS_JSON---")) {
+      const parts = cleanText.split("---ITEMS_JSON---");
       userNote = parts[0]?.trim() || "";
       try {
         const parsed = JSON.parse(parts[1]?.trim() || "[]");
@@ -2145,7 +2249,7 @@ function parseItemsFromInvoice(rawDesc, invRecord) {
         }
       } catch {}
     } else {
-      userNote = rawDesc.trim();
+      userNote = cleanText.trim();
     }
   }
 
@@ -2163,130 +2267,157 @@ function parseItemsFromInvoice(rawDesc, invRecord) {
     ];
   }
 
-  return { items, userNote };
+  const tot = Number(invRecord?.total !== undefined ? invRecord.total : (invRecord?.amount || 0));
+  const rawAdv = paymentMeta?.advanceAmount ?? invRecord?.advanceAmount ?? invRecord?.advance_amount;
+  const advanceAmount = rawAdv !== undefined && rawAdv !== null && rawAdv !== "" ? Number(rawAdv) : tot;
+  const rawBal = paymentMeta?.balanceAmount ?? invRecord?.balanceAmount ?? invRecord?.balance_amount;
+  const balanceAmount = rawBal !== undefined && rawBal !== null && rawBal !== "" ? Number(rawBal) : Math.max(0, tot - advanceAmount);
+  const paymentStatus = paymentMeta?.paymentStatus || (balanceAmount > 0 ? (advanceAmount > 0 ? "PARTIAL" : "UDHAR") : "PAID");
+  const settlements = Array.isArray(paymentMeta?.settlements) ? paymentMeta.settlements : [];
+
+  return { items, userNote, advanceAmount, balanceAmount, paymentStatus, settlements };
 }
 
 export async function fetchInvoices(salonId = "default") {
-  let remoteInvoices = null;
+  const cacheKey = `invoices_${salonId || "default"}`;
+  const cached = getCachedQuery(cacheKey);
+  if (cached) return cached;
 
-  if (supabaseConfigured) {
-    try {
-      let query = supabase
-        .from("invoices")
-        .select(`
-          *,
-          customers:customer_id (id, name, mobile, address),
-          transactions:transaction_id (id, amount, payment_mode, payment_status, is_voided)
-        `)
-        .order("invoice_date", { ascending: false })
-        .order("created_at", { ascending: false });
+  return deduplicateRequest(cacheKey, async () => {
+    let remoteInvoices = null;
 
-      if (salonId && salonId !== "all") {
-        query = query.eq("salon_id", salonId);
-      }
+    if (supabaseConfigured) {
+      try {
+        let query = supabase
+          .from("invoices")
+          .select(`
+            *,
+            customers:customer_id (id, name, mobile, address),
+            transactions:transaction_id (id, amount, payment_mode, payment_status, is_voided)
+          `)
+          .order("invoice_date", { ascending: false })
+          .order("created_at", { ascending: false });
 
-      const { data, error } = await query;
-      if (!error && Array.isArray(data)) {
-        remoteInvoices = data.map(inv => {
-          const { items, userNote } = parseItemsFromInvoice(inv.description, inv);
-          const voidInfo = parseVoidStatus(inv);
+        if (salonId && salonId !== "all") {
+          query = query.eq("salon_id", salonId);
+        }
 
-          let subtotal = Number(inv.subtotal || 0);
-          let total = Number(inv.total || inv.amount || 0);
-          if (total === 0 && Array.isArray(items) && items.length > 0) {
-            const itemsSum = items.reduce((s, it) => s + (Number(it.amount) || (Number(it.unitPrice || 0) * Math.max(1, Number(it.quantity || 1)))), 0);
-            if (itemsSum > 0) {
-              subtotal = itemsSum;
-              total = Math.max(0, subtotal - Number(inv.discount || 0));
+        const { data, error } = await query;
+        if (!error && Array.isArray(data)) {
+          remoteInvoices = data.map(inv => {
+            const { items, userNote, advanceAmount, balanceAmount, paymentStatus, settlements } = parseItemsFromInvoice(inv.description, inv);
+            const voidInfo = parseVoidStatus(inv);
+
+            let subtotal = Number(inv.subtotal || 0);
+            let total = Number(inv.total || inv.amount || 0);
+            if (total === 0 && Array.isArray(items) && items.length > 0) {
+              const itemsSum = items.reduce((s, it) => s + (Number(it.amount) || (Number(it.unitPrice || 0) * Math.max(1, Number(it.quantity || 1)))), 0);
+              if (itemsSum > 0) {
+                subtotal = itemsSum;
+                total = Math.max(0, subtotal - Number(inv.discount || 0));
+              }
             }
-          }
 
-          return {
-            id: String(inv.id),
-            salonId: inv.salon_id || salonId,
-            salon_id: inv.salon_id || salonId,
-            invoiceNumber: inv.invoice_number,
-            customerId: inv.customer_id,
-            customerName: inv.customers?.name || "Customer",
-            customerMobile: inv.customers?.mobile || "",
-            name: inv.customers?.name || "Customer",
-            mobile: inv.customers?.mobile || "",
-            address: inv.customers?.address || "",
-            service: inv.service_type || "Hair Wig",
-            productId: inv.product_id,
-            productName: inv.product_name || "",
-            productSize: inv.product_size || "",
-            quantity: Number(inv.quantity || 0),
-            subtotal,
-            discount: Number(inv.discount || 0),
-            total,
-            amount: total,
-            paymentMode: inv.payment_mode || "Cash",
-            status: voidInfo.isVoid ? "VOIDED" : (inv.status || "PAID"),
-            isVoided: voidInfo.isVoid,
-            voidReason: voidInfo.voidReason,
-            voidedAt: voidInfo.voidedAt,
-            voidedByName: voidInfo.voidedByName,
-            description: userNote || "",
-            rawDescription: inv.description || "",
-            items,
-            createdAt: formatToLocalISODate(inv.invoice_date || inv.created_at),
-            rawCreatedAt: inv.invoice_date || inv.created_at
-          };
-        });
-      }
-    } catch (err) {
-      console.warn("fetchInvoices Supabase error:", err);
-    }
-  }
-
-  // Local / Demo Data
-  const d = getLocalDemoData();
-  const rawLocal = (d.invoices || []).map(inv => {
-    const { items, userNote } = parseItemsFromInvoice(inv.rawDescription || inv.description, inv);
-    const voidInfo = parseVoidStatus(inv);
-
-    let subtotal = Number(inv.subtotal || 0);
-    let total = Number(inv.total || inv.amount || 0);
-    if (total === 0 && Array.isArray(items) && items.length > 0) {
-      const itemsSum = items.reduce((s, it) => s + (Number(it.amount) || (Number(it.unitPrice || 0) * Math.max(1, Number(it.quantity || 1)))), 0);
-      if (itemsSum > 0) {
-        subtotal = itemsSum;
-        total = Math.max(0, subtotal - Number(inv.discount || 0));
+            return {
+              id: String(inv.id),
+              salonId: inv.salon_id || salonId,
+              salon_id: inv.salon_id || salonId,
+              invoiceNumber: inv.invoice_number,
+              customerId: inv.customer_id,
+              customerName: inv.customers?.name || "Customer",
+              customerMobile: inv.customers?.mobile || "",
+              name: inv.customers?.name || "Customer",
+              mobile: inv.customers?.mobile || "",
+              address: inv.customers?.address || "",
+              service: inv.service_type || "Hair Wig",
+              productId: inv.product_id,
+              productName: inv.product_name || "",
+              productSize: inv.product_size || "",
+              quantity: Number(inv.quantity || 0),
+              subtotal,
+              discount: Number(inv.discount || 0),
+              total,
+              amount: total,
+              advanceAmount,
+              balanceAmount,
+              paymentStatus,
+              settlements: Array.isArray(settlements) ? settlements : [],
+              paymentMode: inv.payment_mode || "Cash",
+              status: voidInfo.isVoid ? "VOIDED" : (paymentStatus || inv.status || "PAID"),
+              isVoided: voidInfo.isVoid,
+              voidReason: voidInfo.voidReason,
+              voidedAt: voidInfo.voidedAt,
+              voidedByName: voidInfo.voidedByName,
+              description: userNote || "",
+              rawDescription: inv.description || "",
+              items,
+              createdAt: formatToLocalISODate(inv.invoice_date || inv.created_at),
+              rawCreatedAt: inv.invoice_date || inv.created_at
+            };
+          });
+        }
+      } catch (err) {
+        console.warn("fetchInvoices Supabase error:", err);
       }
     }
 
-    return {
-      ...inv,
-      id: String(inv.id),
-      salonId: inv.salonId || inv.salon_id || "default",
-      salon_id: inv.salonId || inv.salon_id || "default",
-      subtotal,
-      total,
-      amount: total,
-      items,
-      description: userNote || "",
-      isVoided: voidInfo.isVoid,
-      status: voidInfo.isVoid ? "VOIDED" : (inv.status || "PAID"),
-      voidReason: voidInfo.voidReason,
-      createdAt: formatToLocalISODate(inv.createdAt || inv.invoice_date || new Date().toISOString())
-    };
+    // Local / Demo Data
+    const d = getLocalDemoData();
+    const rawLocal = (d.invoices || []).map(inv => {
+      const { items, userNote, advanceAmount, balanceAmount, paymentStatus, settlements } = parseItemsFromInvoice(inv.rawDescription || inv.description, inv);
+      const voidInfo = parseVoidStatus(inv);
+
+      let subtotal = Number(inv.subtotal || 0);
+      let total = Number(inv.total || inv.amount || 0);
+      if (total === 0 && Array.isArray(items) && items.length > 0) {
+        const itemsSum = items.reduce((s, it) => s + (Number(it.amount) || (Number(it.unitPrice || 0) * Math.max(1, Number(it.quantity || 1)))), 0);
+        if (itemsSum > 0) {
+          subtotal = itemsSum;
+          total = Math.max(0, subtotal - Number(inv.discount || 0));
+        }
+      }
+
+      const effAdv = inv.advanceAmount !== undefined ? inv.advanceAmount : advanceAmount;
+      const effBal = inv.balanceAmount !== undefined ? inv.balanceAmount : balanceAmount;
+      const effStatus = inv.paymentStatus || paymentStatus || (effBal > 0 ? (effAdv > 0 ? "PARTIAL" : "UDHAR") : "PAID");
+      const effSettlements = Array.isArray(inv.settlements) ? inv.settlements : (Array.isArray(settlements) ? settlements : []);
+
+      return {
+        ...inv,
+        id: String(inv.id),
+        salonId: inv.salonId || inv.salon_id || "default",
+        salon_id: inv.salonId || inv.salon_id || "default",
+        subtotal,
+        total,
+        amount: total,
+        advanceAmount: effAdv,
+        balanceAmount: effBal,
+        paymentStatus: effStatus,
+        settlements: effSettlements,
+        items,
+        description: userNote || "",
+        isVoided: voidInfo.isVoid,
+        status: voidInfo.isVoid ? "VOIDED" : (effStatus || inv.status || "PAID"),
+        voidReason: voidInfo.voidReason,
+        createdAt: formatToLocalISODate(inv.createdAt || inv.invoice_date || new Date().toISOString())
+      };
+    });
+
+    // Merge remote and local so newly created invoices are NEVER lost
+    const invMap = new Map();
+    rawLocal.forEach(inv => invMap.set(String(inv.id), inv));
+    if (Array.isArray(remoteInvoices)) {
+      remoteInvoices.forEach(inv => invMap.set(String(inv.id), inv));
+    }
+
+    const allMerged = Array.from(invMap.values());
+    let result = allMerged;
+    if (salonId && salonId !== "all") {
+      result = allMerged.filter(i => (i.salonId || i.salon_id || "default") === salonId);
+    }
+    setCachedQuery(cacheKey, result);
+    return result;
   });
-
-
-  // Merge remote and local so newly created invoices are NEVER lost
-  const invMap = new Map();
-  rawLocal.forEach(inv => invMap.set(String(inv.id), inv));
-  if (Array.isArray(remoteInvoices)) {
-    remoteInvoices.forEach(inv => invMap.set(String(inv.id), inv));
-  }
-
-  const allMerged = Array.from(invMap.values());
-
-  if (salonId && salonId !== "all") {
-    return allMerged.filter(i => (i.salonId || i.salon_id || "default") === salonId);
-  }
-  return allMerged;
 }
 
 export async function createInvoice(form, lineItems, actorInfo = null, salonId = "default") {
@@ -2296,23 +2427,12 @@ export async function createInvoice(form, lineItems, actorInfo = null, salonId =
 
   const effectiveSalonId = salonId || "default";
 
-  // Auto-sync salon in DB before creating invoice
+  // Auto-sync salon in DB before creating invoice (cached in-memory)
   if (supabaseConfigured) {
     await ensureSalonInDatabase(effectiveSalonId);
   }
 
-  // 1. Guaranteed Customer creation/update
   let savedCustomer = null;
-  try {
-    savedCustomer = await saveCustomer({
-      name: form.name.trim(),
-      mobile: normMobile,
-      address: form.address?.trim() || "",
-      whatsapp_opt_in: form.whatsapp !== false
-    }, actorInfo, effectiveSalonId);
-  } catch (custErr) {
-    console.warn("Customer save note in createInvoice:", custErr);
-  }
 
   const rawActiveItems = Array.isArray(lineItems) && lineItems.length > 0 ? lineItems : (
     Array.isArray(form.items) && form.items.length > 0 ? form.items : [
@@ -2353,7 +2473,14 @@ export async function createInvoice(form, lineItems, actorInfo = null, salonId =
   const discount = Math.max(0, Number(form.discount || 0));
   const total = Math.max(0, Number(form.total !== undefined && form.total !== "" && !isNaN(Number(form.total)) ? form.total : Math.max(0, subtotal - discount)));
 
-  const fullDescriptionPayload = `${form.description || ""}\n---ITEMS_JSON---\n${JSON.stringify(activeItems)}`.trim();
+  // Calculate advance and balance / udhar
+  const rawAdv = form.advanceAmount !== undefined && form.advanceAmount !== "" ? Number(form.advanceAmount) : total;
+  const advanceAmount = Math.max(0, isNaN(rawAdv) ? total : rawAdv);
+  const balanceAmount = Math.max(0, total - advanceAmount);
+  const paymentStatus = balanceAmount > 0 ? (advanceAmount > 0 ? "PARTIAL" : "UDHAR") : "PAID";
+
+  const paymentMetaObj = { advanceAmount, balanceAmount, paymentStatus };
+  const fullDescriptionPayload = `${form.description || ""}\n---ITEMS_JSON---\n${JSON.stringify(activeItems)}\n---PAYMENT_META---\n${JSON.stringify(paymentMetaObj)}`.trim();
 
   // Dynamically resolve salon's configured invoice prefix
   let effectivePrefix = (form.invoicePrefix || "").trim().toUpperCase();
@@ -2412,6 +2539,10 @@ export async function createInvoice(form, lineItems, actorInfo = null, salonId =
           discount: discount,
           amount: total,
           total: total,
+          advanceAmount,
+          balanceAmount,
+          paymentStatus,
+          status: paymentStatus,
           paymentMode: form.paymentMode || "Cash",
           items: activeItems,
           createdAt: formatToLocalISODate(invoiceDateISO)
@@ -2426,6 +2557,15 @@ export async function createInvoice(form, lineItems, actorInfo = null, salonId =
     // 2. Direct Supabase write fallback
     if (!finalSavedInv) {
       try {
+        if (!savedCustomer) {
+          savedCustomer = await saveCustomer({
+            name: form.name.trim(),
+            mobile: normMobile,
+            address: form.address?.trim() || "",
+            whatsapp_opt_in: form.whatsapp !== false
+          }, actorInfo, effectiveSalonId).catch(() => null);
+        }
+
         let txnId = null;
         try {
           const { data: txnData } = await supabase
@@ -2433,10 +2573,10 @@ export async function createInvoice(form, lineItems, actorInfo = null, salonId =
             .insert({
               salon_id: effectiveSalonId,
               customer_id: savedCustomer?.id || null,
-              amount: total,
+              amount: advanceAmount,
               discount: discount,
               payment_mode: form.paymentMode || "Cash",
-              payment_status: "SUCCESS",
+              payment_status: balanceAmount > 0 ? "PARTIAL" : "SUCCESS",
               is_voided: false,
               created_at: invoiceDateISO
             })
@@ -2461,7 +2601,7 @@ export async function createInvoice(form, lineItems, actorInfo = null, salonId =
           payment_mode: form.paymentMode || "Cash",
           description: fullDescriptionPayload,
           invoice_date: invoiceDateISO,
-          status: "PAID",
+          status: paymentStatus,
           is_voided: false,
           created_at: invoiceDateISO,
           updated_at: new Date().toISOString()
@@ -2490,6 +2630,10 @@ export async function createInvoice(form, lineItems, actorInfo = null, salonId =
             discount: discount,
             amount: total,
             total: total,
+            advanceAmount,
+            balanceAmount,
+            paymentStatus,
+            status: paymentStatus,
             paymentMode: form.paymentMode || "Cash",
             items: activeItems,
             createdAt: formatToLocalISODate(invoiceDateISO)
@@ -2500,34 +2644,38 @@ export async function createInvoice(form, lineItems, actorInfo = null, salonId =
       }
     }
 
-    // 3. Guaranteed stock deduction for all wig line items in Supabase
+    // 3. Guaranteed stock deduction for additional wig line items in Supabase (parallel execution)
     const itemsToDeduct = rpcSuccess ? activeItems.slice(1) : activeItems;
-    for (const item of itemsToDeduct) {
-      if (item.service === "Hair Wig" && item.productId) {
-        try {
-          if (isUuid(item.productId)) {
-            await supabase.rpc("deduct_wig_stock", {
-              p_product_id: item.productId,
-              p_quantity: Number(item.quantity || 1)
-            });
-          } else {
-            const { data: currentP } = await supabase
-              .from("wig_products")
-              .select("stock")
-              .eq("id", item.productId)
-              .maybeSingle();
-            if (currentP) {
-              const newStock = Math.max(0, Number(currentP.stock || 0) - Number(item.quantity || 1));
-              await supabase
-                .from("wig_products")
-                .update({ stock: newStock, updated_at: new Date().toISOString() })
-                .eq("id", item.productId);
+    if (itemsToDeduct.length > 0) {
+      await Promise.allSettled(
+        itemsToDeduct.map(async (item) => {
+          if (item.service === "Hair Wig" && item.productId) {
+            try {
+              if (isUuid(item.productId)) {
+                await supabase.rpc("deduct_wig_stock", {
+                  p_product_id: item.productId,
+                  p_quantity: Number(item.quantity || 1)
+                });
+              } else {
+                const { data: currentP } = await supabase
+                  .from("wig_products")
+                  .select("stock")
+                  .eq("id", item.productId)
+                  .maybeSingle();
+                if (currentP) {
+                  const newStock = Math.max(0, Number(currentP.stock || 0) - Number(item.quantity || 1));
+                  await supabase
+                    .from("wig_products")
+                    .update({ stock: newStock, updated_at: new Date().toISOString() })
+                    .eq("id", item.productId);
+                }
+              }
+            } catch (stkErr) {
+              console.warn("Stock deduction warning in invoice save:", stkErr);
             }
           }
-        } catch (stkErr) {
-          console.warn("Stock deduction warning in invoice save:", stkErr);
-        }
-      }
+        })
+      );
     }
   }
 
@@ -2545,7 +2693,7 @@ export async function createInvoice(form, lineItems, actorInfo = null, salonId =
   });
 
   // Guarantee customer in local storage
-  const custId = savedCustomer?.id || ("cust-" + normMobile.slice(-10));
+  const custId = savedCustomer?.id || finalSavedInv?.customer_id || ("cust-" + normMobile.slice(-10));
   const localCustObj = {
     id: String(custId),
     salonId: effectiveSalonId,
@@ -2586,8 +2734,11 @@ export async function createInvoice(form, lineItems, actorInfo = null, salonId =
     discount,
     amount: total,
     total,
+    advanceAmount,
+    balanceAmount,
+    paymentStatus,
     paymentMode: form.paymentMode || "Cash",
-    status: "PAID",
+    status: paymentStatus,
     isVoided: false,
     description: form.description || "",
     rawDescription: fullDescriptionPayload,
@@ -2615,6 +2766,10 @@ export async function createInvoice(form, lineItems, actorInfo = null, salonId =
     newData: { invoice_number: localInv.invoiceNumber, total: localInv.total, customer_name: localInv.name },
     details: `Created Invoice #${localInv.invoiceNumber} for ₹${localInv.total.toLocaleString("en-IN")}`
   });
+
+  invalidateQueryCache("invoices");
+  invalidateQueryCache("dashboard");
+  invalidateQueryCache("reports");
 
   return finalSavedInv || localInv;
 }
@@ -2708,8 +2863,16 @@ export async function voidInvoice(invoiceId, reason, actorInfo = null, salonId =
       details: `Voided Invoice #${inv.invoiceNumber || invoiceId}. Reason: ${cleanReason}`
     }).catch(() => {});
 
+    invalidateQueryCache("invoices");
+    invalidateQueryCache("dashboard");
+    invalidateQueryCache("reports");
+
     return voidedInv;
   }
+
+  invalidateQueryCache("invoices");
+  invalidateQueryCache("dashboard");
+  invalidateQueryCache("reports");
 
   return { id: invoiceId, status: "VOIDED", is_voided: true, void_reason: cleanReason };
 }
@@ -2724,6 +2887,18 @@ export async function updateInvoice(updatedData, selectedProduct, actorInfo = nu
   const subtotal = Math.max(0, Number(updatedData.subtotal ?? updatedData.amount ?? 0));
   const discount = Math.max(0, Number(updatedData.discount || 0));
   const total = Math.max(0, Number(updatedData.total !== undefined ? updatedData.total : (subtotal - discount)));
+
+  // Calculate advance and balance / udhar
+  const rawAdv = updatedData.advanceAmount !== undefined && updatedData.advanceAmount !== "" ? Number(updatedData.advanceAmount) : total;
+  const advanceAmount = Math.max(0, isNaN(rawAdv) ? total : rawAdv);
+  const balanceAmount = Math.max(0, total - advanceAmount);
+  const paymentStatus = balanceAmount > 0 ? (advanceAmount > 0 ? "PARTIAL" : "UDHAR") : "PAID";
+
+  const paymentMetaObj = { advanceAmount, balanceAmount, paymentStatus };
+  let baseDesc = (updatedData.rawDescription || updatedData.description || "")
+    .replace(/---PAYMENT_META---[\s\S]*/g, "")
+    .trim();
+  const fullDescriptionPayload = `${baseDesc}\n---PAYMENT_META---\n${JSON.stringify(paymentMetaObj)}`.trim();
 
   const isUuid = (val) => typeof val === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val);
 
@@ -2741,13 +2916,17 @@ export async function updateInvoice(updatedData, selectedProduct, actorInfo = nu
         p_discount: discount,
         p_total: total,
         p_payment_mode: updatedData.paymentMode || "Cash",
-        p_description: updatedData.description?.trim() || "",
+        p_description: fullDescriptionPayload,
         p_invoice_date: updatedData.rawCreatedAt || updatedData.invoice_date || null,
         p_salon_id: salonId || "default"
       };
 
       const { data, error } = await supabase.rpc("update_invoice_with_stock", rpcParams);
-      if (!error && data) return data;
+      if (!error && data) {
+        // also update status on invoice directly if needed
+        await supabase.from("invoices").update({ status: paymentStatus, description: fullDescriptionPayload }).eq("id", updatedData.id);
+        return { ...data, advanceAmount, balanceAmount, paymentStatus, status: paymentStatus };
+      }
     } catch (rpcErr) {
       console.warn("update_invoice_with_stock exception:", rpcErr);
     }
@@ -2772,16 +2951,201 @@ export async function updateInvoice(updatedData, selectedProduct, actorInfo = nu
       discount,
       amount: total,
       total,
+      advanceAmount,
+      balanceAmount,
+      paymentStatus,
+      status: paymentStatus,
       paymentMode: updatedData.paymentMode,
-      description: updatedData.description || ""
+      description: updatedData.description || "",
+      rawDescription: fullDescriptionPayload
     };
 
     d.invoices[oldInvIdx] = saved;
     saveLocalDemoData(d);
+
+    invalidateQueryCache("invoices");
+    invalidateQueryCache("dashboard");
+    invalidateQueryCache("reports");
+
     return saved;
   }
 
-  return updatedData;
+  invalidateQueryCache("invoices");
+  invalidateQueryCache("dashboard");
+  invalidateQueryCache("reports");
+
+  return { ...updatedData, advanceAmount, balanceAmount, paymentStatus, status: paymentStatus };
+}
+
+export async function settleInvoiceBalance(invoiceId, paymentData, actorInfo = null, salonId = "default", knownInvoice = null) {
+  const amountToPay = Math.max(0, Number(paymentData?.amount || paymentData?.amountPaid || 0));
+  if (amountToPay <= 0) {
+    throw new Error("Please enter a valid payment amount greater than zero.");
+  }
+
+  const pMode = paymentData?.paymentMode || "Cash";
+  const pNote = String(paymentData?.note || "").trim();
+  const paymentDate = paymentData?.paymentDate ? new Date(paymentData.paymentDate).toISOString() : new Date().toISOString();
+
+  // 1. Rapidly resolve target invoice without full network fetch if already known or in local storage
+  let targetInv = knownInvoice;
+  if (!targetInv) {
+    const localInvoices = getLocalDemoData().invoices || [];
+    targetInv = localInvoices.find(i => String(i.id) === String(invoiceId));
+  }
+  if (!targetInv) {
+    const invoices = await fetchInvoices(salonId || "default");
+    targetInv = invoices.find(i => String(i.id) === String(invoiceId));
+  }
+  if (!targetInv) {
+    throw new Error(`Invoice #${invoiceId} not found.`);
+  }
+
+  if (targetInv.isVoided) {
+    throw new Error("Cannot collect payment on a voided invoice.");
+  }
+
+  const currentTotal = Number(targetInv.total !== undefined ? targetInv.total : (targetInv.amount || 0));
+  const currentAdvance = Number(targetInv.advanceAmount !== undefined ? targetInv.advanceAmount : currentTotal);
+  const currentBalance = Number(targetInv.balanceAmount !== undefined ? targetInv.balanceAmount : Math.max(0, currentTotal - currentAdvance));
+
+  if (currentBalance <= 0) {
+    throw new Error("This invoice is already fully paid. No pending balance.");
+  }
+
+  // Calculate new advance and balance
+  const actualPayment = Math.min(amountToPay, currentBalance);
+  const newAdvance = currentAdvance + actualPayment;
+  const newBalance = Math.max(0, currentTotal - newAdvance);
+  const newStatus = newBalance === 0 ? "PAID" : "PARTIAL";
+
+  // Build settlement entry
+  const newSettlement = {
+    id: "pay-" + Date.now(),
+    amount: actualPayment,
+    paymentMode: pMode,
+    date: paymentDate,
+    collectedByName: actorInfo?.name || "Staff",
+    collectedById: actorInfo?.id || null,
+    note: pNote
+  };
+
+  const existingSettlements = Array.isArray(targetInv.settlements) ? targetInv.settlements : [];
+  const updatedSettlements = [...existingSettlements, newSettlement];
+
+  // Re-encode description with updated PAYMENT_META
+  const paymentMetaObj = {
+    advanceAmount: newAdvance,
+    balanceAmount: newBalance,
+    paymentStatus: newStatus,
+    settlements: updatedSettlements,
+    lastPayment: {
+      amount: actualPayment,
+      mode: pMode,
+      date: paymentDate
+    }
+  };
+
+  const rawBaseDesc = (targetInv.rawDescription || targetInv.description || "")
+    .replace(/---PAYMENT_META---[\s\S]*/g, "")
+    .trim();
+  const fullDescriptionPayload = `${rawBaseDesc}\n---PAYMENT_META---\n${JSON.stringify(paymentMetaObj)}`.trim();
+
+  const isUuid = (val) => typeof val === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val);
+
+  // 2. Supabase persistence in parallel
+  if (supabaseConfigured && isUuid(invoiceId)) {
+    try {
+      const salonTarget = targetInv.salonId || targetInv.salon_id || salonId || "default";
+
+      const txnPromise = supabase.from("transactions").insert({
+        salon_id: salonTarget,
+        customer_id: targetInv.customerId || null,
+        amount: actualPayment,
+        discount: 0,
+        payment_mode: pMode,
+        payment_status: "SUCCESS",
+        is_voided: false,
+        created_at: paymentDate
+      });
+
+      const invPromise = supabase.from("invoices").update({
+        status: newStatus,
+        payment_mode: pMode,
+        description: fullDescriptionPayload,
+        updated_at: new Date().toISOString()
+      }).eq("id", invoiceId);
+
+      await Promise.allSettled([txnPromise, invPromise]);
+    } catch (dbErr) {
+      console.warn("Supabase settlement exception:", dbErr);
+    }
+  }
+
+  // 3. Update Local Storage cache
+  const d = getLocalDemoData();
+  const oldInvIdx = (d.invoices || []).findIndex(i => String(i.id) === String(invoiceId));
+  const updatedInv = {
+    ...targetInv,
+    advanceAmount: newAdvance,
+    balanceAmount: newBalance,
+    paymentStatus: newStatus,
+    status: newStatus,
+    paymentMode: pMode,
+    settlements: updatedSettlements,
+    rawDescription: fullDescriptionPayload
+  };
+
+  if (oldInvIdx >= 0) {
+    d.invoices[oldInvIdx] = {
+      ...d.invoices[oldInvIdx],
+      ...updatedInv
+    };
+    saveLocalDemoData(d);
+  }
+
+  // Log Audit Event
+  logAuditEvent({
+    action: "INVOICE_SETTLEMENT",
+    entityType: "invoice",
+    entityId: invoiceId,
+    userId: actorInfo?.id,
+    userName: actorInfo?.name,
+    userRole: actorInfo?.role,
+    salonId: targetInv.salonId || targetInv.salon_id || salonId || "default",
+    newData: {
+      invoiceNumber: targetInv.invoiceNumber,
+      amountPaid: actualPayment,
+      remainingBalance: newBalance,
+      status: newStatus
+    },
+    details: `Collected pending payment of ₹${actualPayment.toLocaleString("en-IN")} via ${pMode} for Invoice #${targetInv.invoiceNumber}. Remaining balance: ₹${newBalance.toLocaleString("en-IN")}`
+  }).catch(() => {});
+
+  invalidateQueryCache("invoices");
+  invalidateQueryCache("dashboard");
+  invalidateQueryCache("reports");
+
+  return {
+    invoice: updatedInv,
+    settlement: newSettlement,
+    amountPaid: actualPayment,
+    remainingBalance: newBalance,
+    isFullyPaid: newBalance === 0
+  };
+}
+
+export async function findCustomerPendingUdhar(rawMobile, salonId = "default") {
+  const norm = normalizeWhatsAppNumber(rawMobile);
+  if (!norm) return [];
+  const digits10 = norm.slice(-10);
+
+  const allInvoices = await fetchInvoices(salonId || "default");
+  return allInvoices.filter(i => {
+    if (i.isVoided) return false;
+    const invDigits = normalizeWhatsAppNumber(i.mobile || i.customerMobile).slice(-10);
+    return invDigits === digits10 && Number(i.balanceAmount || 0) > 0;
+  });
 }
 
 export async function deleteInvoice(invoiceId, actorInfo = null, salonId = "default") {
@@ -2817,6 +3181,11 @@ export async function deleteInvoice(invoiceId, actorInfo = null, salonId = "defa
   const d = getLocalDemoData();
   d.invoices = (d.invoices || []).filter(i => String(i.id) !== String(invoiceId));
   saveLocalDemoData(d);
+
+  invalidateQueryCache("invoices");
+  invalidateQueryCache("dashboard");
+  invalidateQueryCache("reports");
+
   return true;
 }
 
@@ -2828,7 +3197,7 @@ export async function fetchSettings(salonId = "default") {
   const matchedLocal = salons.find(s => s.id === (salonId || "default"));
 
   const defaultSettings = {
-    shop_name: matchedLocal?.name || "NICE LOOKING",
+    shop_name: matchedLocal?.name || "MY SALON",
     shop_subtitle: matchedLocal?.subtitle || "Hair Wig & Hair Services",
     shop_mobile: matchedLocal?.mobile || "+91 98765 43210",
     shop_address: matchedLocal?.address || "",
@@ -2892,7 +3261,7 @@ export async function saveSettings(settings, actorInfo = null, salonId = "defaul
   // ONLY Super Admin can change salon/branch name
   const salonName = (!isSuperAdmin && existingSalon?.name)
     ? existingSalon.name
-    : (settings.shop_name || existingSalon?.name || "NICE LOOKING").trim();
+    : (settings.shop_name || existingSalon?.name || "MY SALON").trim();
 
   // Invoice prefix can be changed by Salon Owner and Super Admin
   const prefix = ((settings.invoice_prefix !== undefined && settings.invoice_prefix !== null && String(settings.invoice_prefix).trim() !== "")
@@ -2999,3 +3368,1535 @@ export async function saveSettings(settings, actorInfo = null, salonId = "defaul
 }
 
 export const saveBusinessSettings = saveSettings;
+
+// =====================================================================
+// EMPLOYEE MANAGEMENT, ATTENDANCE & PAYROLL MODULE (Multi-Salon SaaS)
+// =====================================================================
+
+// Helper to check if string is UUID
+const isUuid = (val) => typeof val === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val);
+
+// -------------------------------------------------------------
+// 1. Employee Directory Management
+// -------------------------------------------------------------
+
+export async function fetchEmployees(salonId = "default") {
+  const targetSalon = salonId || "default";
+  const cacheKey = `employees_${targetSalon}`;
+  const cached = getCachedQuery(cacheKey);
+  if (cached) return cached;
+
+  return deduplicateRequest(cacheKey, async () => {
+    let remoteEmployees = null;
+
+    if (supabaseConfigured) {
+      try {
+        let query = supabase
+          .from("employees")
+          .select("*")
+          .order("created_at", { ascending: false });
+
+        if (targetSalon && targetSalon !== "all") {
+          query = query.eq("salon_id", targetSalon);
+        }
+
+        const { data, error } = await query;
+        if (!error && Array.isArray(data)) {
+          remoteEmployees = data.map(e => ({
+            id: String(e.id),
+            salonId: e.salon_id || targetSalon,
+            branchId: e.branch_id || e.salon_id || targetSalon,
+            name: e.name,
+            mobile: e.mobile,
+            jobRole: e.job_role,
+            joiningDate: e.joining_date || new Date().toISOString().slice(0, 10),
+            salaryType: e.salary_type || "MONTHLY", // 'MONTHLY', 'DAILY_WAGE', 'HOURLY'
+            baseSalary: Number(e.base_salary || 0),
+            monthlyWorkingDays: Number(e.monthly_working_days || 30),
+            paidLeavesPerMonth: Number(e.paid_leaves_per_month !== undefined ? e.paid_leaves_per_month : 1),
+            overtimeRate: Number(e.overtime_rate || 0),
+            fixedAllowance: Number(e.fixed_allowance || 0),
+            status: e.status || "ACTIVE", // 'ACTIVE', 'INACTIVE'
+            address: e.address || "",
+            notes: e.notes || "",
+            userId: e.user_id || null,
+            createdAt: e.created_at
+          }));
+        }
+      } catch (err) {
+        console.warn("fetchEmployees Supabase query warning:", err);
+      }
+    }
+
+    // Merge with local demo cache
+    const d = getLocalDemoData();
+    const rawLocal = (d.employees || []).map(e => ({
+      id: String(e.id),
+      salonId: e.salonId || e.salon_id || targetSalon,
+      branchId: e.branchId || e.salonId || targetSalon,
+      name: e.name,
+      mobile: e.mobile,
+      jobRole: e.jobRole || e.job_role || "Staff",
+      joiningDate: e.joiningDate || e.joining_date || new Date().toISOString().slice(0, 10),
+      salaryType: e.salaryType || e.salary_type || "MONTHLY",
+      baseSalary: Number(e.baseSalary || e.base_salary || 0),
+      monthlyWorkingDays: Number(e.monthlyWorkingDays || e.monthly_working_days || 30),
+      paidLeavesPerMonth: Number(e.paidLeavesPerMonth ?? e.paid_leaves_per_month ?? 1),
+      overtimeRate: Number(e.overtimeRate || e.overtime_rate || 0),
+      fixedAllowance: Number(e.fixedAllowance || e.fixed_allowance || 0),
+      status: e.status || "ACTIVE",
+      address: e.address || "",
+      notes: e.notes || "",
+      userId: e.userId || e.user_id || null,
+      createdAt: e.createdAt || e.created_at || new Date().toISOString()
+    }));
+
+    const empMap = new Map();
+    rawLocal.forEach(e => {
+      if (!targetSalon || targetSalon === "all" || e.salonId === targetSalon) {
+        empMap.set(String(e.id), e);
+      }
+    });
+
+    if (Array.isArray(remoteEmployees)) {
+      remoteEmployees.forEach(e => empMap.set(String(e.id), e));
+    }
+
+    const result = Array.from(empMap.values());
+    setCachedQuery(cacheKey, result);
+    return result;
+  });
+}
+
+export async function saveEmployee(employeeData, actorInfo = null, salonId = "default") {
+  const effectiveSalonId = employeeData.salonId || employeeData.salon_id || salonId || "default";
+  const name = String(employeeData.name || "").trim();
+  const mobile = String(employeeData.mobile || "").replace(/\D/g, "");
+  const jobRole = String(employeeData.jobRole || employeeData.job_role || "Staff").trim();
+  const salaryType = ["MONTHLY", "DAILY_WAGE", "HOURLY"].includes(employeeData.salaryType)
+    ? employeeData.salaryType
+    : "MONTHLY";
+  const baseSalary = Math.max(0, Number(employeeData.baseSalary || 0));
+  const monthlyWorkingDays = Math.min(31, Math.max(20, Number(employeeData.monthlyWorkingDays || 30)));
+  const paidLeavesPerMonth = Math.max(0, Number(employeeData.paidLeavesPerMonth ?? 1));
+  const overtimeRate = Math.max(0, Number(employeeData.overtimeRate || 0));
+  const fixedAllowance = Math.max(0, Number(employeeData.fixedAllowance || 0));
+  const status = employeeData.status === "INACTIVE" ? "INACTIVE" : "ACTIVE";
+  const joiningDate = employeeData.joiningDate || new Date().toISOString().slice(0, 10);
+  const address = employeeData.address || "";
+  const notes = employeeData.notes || "";
+  const branchId = employeeData.branchId || effectiveSalonId;
+
+  if (!name) throw new Error("Employee full name is required.");
+  if (mobile.length < 10) throw new Error("A valid 10-digit mobile number is required.");
+
+  let savedEmployee = null;
+
+  if (supabaseConfigured) {
+    try {
+      const payload = {
+        salon_id: effectiveSalonId,
+        branch_id: branchId,
+        name,
+        mobile,
+        job_role: jobRole,
+        joining_date: joiningDate,
+        salary_type: salaryType,
+        base_salary: baseSalary,
+        monthly_working_days: monthlyWorkingDays,
+        paid_leaves_per_month: paidLeavesPerMonth,
+        overtime_rate: overtimeRate,
+        fixed_allowance: fixedAllowance,
+        status,
+        address,
+        notes,
+        updated_at: new Date().toISOString()
+      };
+
+      if (employeeData.id && isUuid(employeeData.id)) {
+        const { data, error } = await supabase
+          .from("employees")
+          .update(payload)
+          .eq("id", employeeData.id)
+          .select()
+          .maybeSingle();
+
+        if (!error && data) savedEmployee = data;
+      } else {
+        payload.created_by = actorInfo?.id && isUuid(actorInfo.id) ? actorInfo.id : null;
+        const { data, error } = await supabase
+          .from("employees")
+          .insert(payload)
+          .select()
+          .maybeSingle();
+
+        if (!error && data) savedEmployee = data;
+      }
+    } catch (err) {
+      console.warn("saveEmployee Supabase operation warning:", err);
+    }
+  }
+
+  // Update local demo cache
+  const d = getLocalDemoData();
+  if (!d.employees) d.employees = [];
+
+  const empId = savedEmployee?.id || employeeData.id || `emp_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+  const localObj = {
+    id: String(empId),
+    salonId: effectiveSalonId,
+    branchId,
+    name,
+    mobile,
+    jobRole,
+    joiningDate,
+    salaryType,
+    baseSalary,
+    monthlyWorkingDays,
+    paidLeavesPerMonth,
+    overtimeRate,
+    fixedAllowance,
+    status,
+    address,
+    notes,
+    createdAt: savedEmployee?.created_at || employeeData.createdAt || new Date().toISOString()
+  };
+
+  const idx = d.employees.findIndex(e => String(e.id) === String(empId));
+  if (idx >= 0) {
+    d.employees[idx] = { ...d.employees[idx], ...localObj };
+  } else {
+    d.employees.unshift(localObj);
+  }
+  saveLocalDemoData(d);
+
+  // Log Audit Event
+  logAuditEvent({
+    action: employeeData.id ? "EMPLOYEE_UPDATE" : "EMPLOYEE_CREATE",
+    entityType: "employee",
+    entityId: String(empId),
+    userId: actorInfo?.id,
+    userName: actorInfo?.name,
+    userRole: actorInfo?.role,
+    salonId: effectiveSalonId,
+    details: `${employeeData.id ? "Updated" : "Created"} employee ${name} (${jobRole}) with base salary ₹${baseSalary.toLocaleString("en-IN")}/${salaryType}`
+  }).catch(() => {});
+
+  invalidateQueryCache("employees");
+  return localObj;
+}
+
+export async function deactivateEmployee(employeeId, actorInfo = null, salonId = "default") {
+  if (!employeeId) return false;
+
+  if (supabaseConfigured && isUuid(employeeId)) {
+    try {
+      await supabase
+        .from("employees")
+        .update({ status: "INACTIVE", updated_at: new Date().toISOString() })
+        .eq("id", employeeId);
+    } catch (err) {
+      console.warn("deactivateEmployee Supabase warning:", err);
+    }
+  }
+
+  const d = getLocalDemoData();
+  if (d.employees) {
+    const idx = d.employees.findIndex(e => String(e.id) === String(employeeId));
+    if (idx >= 0) {
+      d.employees[idx].status = "INACTIVE";
+      saveLocalDemoData(d);
+    }
+  }
+
+  logAuditEvent({
+    action: "EMPLOYEE_DEACTIVATE",
+    entityType: "employee",
+    entityId: String(employeeId),
+    userId: actorInfo?.id,
+    userName: actorInfo?.name,
+    userRole: actorInfo?.role,
+    salonId: salonId || "default",
+    details: `Deactivated employee ID #${employeeId}`
+  }).catch(() => {});
+
+  invalidateQueryCache("employees");
+  return true;
+}
+
+// -------------------------------------------------------------
+// 2. Salon Payroll Settings
+// -------------------------------------------------------------
+
+export async function fetchSalonPayrollSettings(salonId = "default") {
+  const targetSalon = salonId || "default";
+  const cacheKey = `payroll_settings_${targetSalon}`;
+  const cached = getCachedQuery(cacheKey);
+  if (cached) return cached;
+
+  return deduplicateRequest(cacheKey, async () => {
+    let remoteSettings = null;
+
+    if (supabaseConfigured) {
+      try {
+        const { data, error } = await supabase
+          .from("salon_payroll_settings")
+          .select("*")
+          .eq("salon_id", targetSalon)
+          .maybeSingle();
+
+        if (!error && data) {
+          remoteSettings = {
+            id: data.id,
+            salonId: data.salon_id,
+            openingTime: data.opening_time || "10:00:00",
+            closingTime: data.closing_time || "20:00:00",
+            gracePeriodMinutes: Number(data.grace_period_minutes ?? 15),
+            salaryDivisorMode: data.salary_divisor_mode || "CALENDAR_DAYS",
+            weeklyOffPaid: data.weekly_off_paid !== false,
+            holidayPaid: data.holiday_paid !== false,
+            halfDayDeductionFactor: Number(data.half_day_deduction_factor ?? 0.5),
+            overtimeEnabled: data.overtime_enabled !== false,
+            defaultOvertimeMultiplier: Number(data.default_overtime_multiplier ?? 1.5)
+          };
+        }
+      } catch (err) {
+        console.warn("fetchSalonPayrollSettings warning:", err);
+      }
+    }
+
+    const d = getLocalDemoData();
+    const localSettings = (d.payrollSettings && d.payrollSettings[targetSalon]) || {};
+
+    const result = {
+      salonId: targetSalon,
+      openingTime: remoteSettings?.openingTime || localSettings.openingTime || "10:00:00",
+      closingTime: remoteSettings?.closingTime || localSettings.closingTime || "20:00:00",
+      gracePeriodMinutes: remoteSettings?.gracePeriodMinutes ?? localSettings.gracePeriodMinutes ?? 15,
+      salaryDivisorMode: remoteSettings?.salaryDivisorMode || localSettings.salaryDivisorMode || "CALENDAR_DAYS",
+      weeklyOffPaid: remoteSettings?.weeklyOffPaid ?? localSettings.weeklyOffPaid ?? true,
+      holidayPaid: remoteSettings?.holidayPaid ?? localSettings.holidayPaid ?? true,
+      halfDayDeductionFactor: remoteSettings?.halfDayDeductionFactor ?? localSettings.halfDayDeductionFactor ?? 0.5,
+      overtimeEnabled: remoteSettings?.overtimeEnabled ?? localSettings.overtimeEnabled ?? true,
+      defaultOvertimeMultiplier: remoteSettings?.defaultOvertimeMultiplier ?? localSettings.defaultOvertimeMultiplier ?? 1.5
+    };
+    setCachedQuery(cacheKey, result);
+    return result;
+  });
+}
+
+export async function saveSalonPayrollSettings(settingsPayload, actorInfo = null, salonId = "default") {
+  const targetSalon = settingsPayload.salonId || salonId || "default";
+
+  const payload = {
+    salon_id: targetSalon,
+    opening_time: settingsPayload.openingTime || "10:00:00",
+    closing_time: settingsPayload.closingTime || "20:00:00",
+    grace_period_minutes: Number(settingsPayload.gracePeriodMinutes ?? 15),
+    salary_divisor_mode: settingsPayload.salaryDivisorMode || "CALENDAR_DAYS",
+    weekly_off_paid: settingsPayload.weeklyOffPaid !== false,
+    holiday_paid: settingsPayload.holidayPaid !== false,
+    half_day_deduction_factor: Number(settingsPayload.halfDayDeductionFactor ?? 0.5),
+    overtime_enabled: settingsPayload.overtimeEnabled !== false,
+    default_overtime_multiplier: Number(settingsPayload.defaultOvertimeMultiplier ?? 1.5),
+    updated_at: new Date().toISOString()
+  };
+
+  if (supabaseConfigured) {
+    try {
+      await supabase
+        .from("salon_payroll_settings")
+        .upsert(payload, { onConflict: "salon_id" });
+    } catch (err) {
+      console.warn("saveSalonPayrollSettings warning:", err);
+    }
+  }
+
+  const d = getLocalDemoData();
+  if (!d.payrollSettings) d.payrollSettings = {};
+  d.payrollSettings[targetSalon] = { ...settingsPayload, salonId: targetSalon };
+  saveLocalDemoData(d);
+
+  logAuditEvent({
+    action: "PAYROLL_SETTINGS_UPDATE",
+    entityType: "settings",
+    entityId: targetSalon,
+    userId: actorInfo?.id,
+    userName: actorInfo?.name,
+    userRole: actorInfo?.role,
+    salonId: targetSalon,
+    details: `Updated payroll & attendance policy settings for salon ${targetSalon}`
+  }).catch(() => {});
+
+  invalidateQueryCache("payroll_settings");
+  return d.payrollSettings[targetSalon];
+}
+
+// -------------------------------------------------------------
+// 3. Attendance Management
+// -------------------------------------------------------------
+
+export async function fetchAttendanceForDate(attendanceDate, salonId = "default") {
+  const targetSalon = salonId || "default";
+  const cacheKey = `attendance_${targetSalon}_${attendanceDate}`;
+  const cached = getCachedQuery(cacheKey);
+  if (cached) return cached;
+
+  return deduplicateRequest(cacheKey, async () => {
+    let remoteRecords = null;
+
+    if (supabaseConfigured) {
+      try {
+        const { data, error } = await supabase
+          .from("attendance")
+          .select("*")
+          .eq("salon_id", targetSalon)
+          .eq("attendance_date", attendanceDate);
+
+        if (!error && Array.isArray(data)) {
+          remoteRecords = data.map(a => ({
+            id: String(a.id),
+            salonId: a.salon_id,
+            employeeId: String(a.employee_id),
+            attendanceDate: a.attendance_date,
+            status: a.status,
+            checkIn: a.check_in || "",
+            checkOut: a.check_out || "",
+            workingHours: Number(a.working_hours || 0),
+            isLate: Boolean(a.is_late),
+            lateMinutes: Number(a.late_minutes || 0),
+            overtimeHours: Number(a.overtime_hours || 0),
+            notes: a.notes || "",
+            markedByName: a.marked_by_name || "Admin"
+          }));
+        }
+      } catch (err) {
+        console.warn("fetchAttendanceForDate warning:", err);
+      }
+    }
+
+    const d = getLocalDemoData();
+    const localList = (d.attendance || []).filter(
+      a => (a.salonId || a.salon_id || targetSalon) === targetSalon && a.attendanceDate === attendanceDate
+    );
+
+    const attMap = new Map();
+    localList.forEach(a => attMap.set(String(a.employeeId), a));
+    if (Array.isArray(remoteRecords)) {
+      remoteRecords.forEach(a => attMap.set(String(a.employeeId), a));
+    }
+
+    const result = Array.from(attMap.values());
+    setCachedQuery(cacheKey, result);
+    return result;
+  });
+}
+
+export async function saveAttendanceBatch(records, actorInfo = null, salonId = "default") {
+  if (!Array.isArray(records) || records.length === 0) return [];
+  const targetSalon = salonId || "default";
+  const settings = await fetchSalonPayrollSettings(targetSalon);
+
+  // Compute late arrival and working hours
+  const processed = records.map(r => {
+    let workingHours = Number(r.workingHours || 0);
+    let isLate = false;
+    let lateMinutes = 0;
+
+    if (r.checkIn && r.checkOut) {
+      try {
+        const [inH, inM] = r.checkIn.split(":").map(Number);
+        const [outH, outM] = r.checkOut.split(":").map(Number);
+        const totalMinutes = (outH * 60 + outM) - (inH * 60 + inM);
+        if (totalMinutes > 0) {
+          workingHours = Number((totalMinutes / 60).toFixed(2));
+        }
+      } catch {}
+    }
+
+    if (r.checkIn && settings.openingTime) {
+      try {
+        const [inH, inM] = r.checkIn.split(":").map(Number);
+        const [openH, openM] = settings.openingTime.split(":").map(Number);
+        const diffMinutes = (inH * 60 + inM) - (openH * 60 + openM);
+        if (diffMinutes > (settings.gracePeriodMinutes || 15)) {
+          isLate = true;
+          lateMinutes = diffMinutes;
+        }
+      } catch {}
+    }
+
+    return {
+      ...r,
+      salonId: targetSalon,
+      workingHours: workingHours || (r.status === "PRESENT" ? 8 : r.status === "HALF_DAY" ? 4 : 0),
+      isLate,
+      lateMinutes,
+      overtimeHours: Number(r.overtimeHours || 0),
+      markedByName: actorInfo?.name || "Admin"
+    };
+  });
+
+  if (supabaseConfigured) {
+    try {
+      const dbPayloads = processed.map(r => ({
+        salon_id: targetSalon,
+        employee_id: r.employeeId,
+        attendance_date: r.attendanceDate,
+        status: r.status,
+        check_in: r.checkIn || null,
+        check_out: r.checkOut || null,
+        working_hours: r.workingHours,
+        is_late: r.isLate,
+        late_minutes: r.lateMinutes,
+        overtime_hours: r.overtimeHours,
+        notes: r.notes || null,
+        marked_by: actorInfo?.id && isUuid(actorInfo.id) ? actorInfo.id : null,
+        marked_by_name: actorInfo?.name || "Admin",
+        updated_at: new Date().toISOString()
+      }));
+
+      await supabase
+        .from("attendance")
+        .upsert(dbPayloads, { onConflict: "employee_id,attendance_date" });
+    } catch (err) {
+      console.warn("saveAttendanceBatch warning:", err);
+    }
+  }
+
+  // Update local cache
+  const d = getLocalDemoData();
+  if (!d.attendance) d.attendance = [];
+
+  processed.forEach(p => {
+    const idx = d.attendance.findIndex(
+      a => String(a.employeeId) === String(p.employeeId) && a.attendanceDate === p.attendanceDate
+    );
+    const recId = p.id || `att_${p.employeeId}_${p.attendanceDate}`;
+    const cleanRec = { ...p, id: recId };
+    if (idx >= 0) {
+      d.attendance[idx] = cleanRec;
+    } else {
+      d.attendance.push(cleanRec);
+    }
+  });
+
+  saveLocalDemoData(d);
+
+  logAuditEvent({
+    action: "ATTENDANCE_RECORD",
+    entityType: "attendance",
+    entityId: processed[0]?.attendanceDate || "date",
+    userId: actorInfo?.id,
+    userName: actorInfo?.name,
+    userRole: actorInfo?.role,
+    salonId: targetSalon,
+    details: `Marked attendance for ${processed.length} employees on date ${processed[0]?.attendanceDate}`
+  }).catch(() => {});
+
+  invalidateQueryCache("attendance");
+  invalidateQueryCache("att_month");
+  invalidateQueryCache("payroll");
+  invalidateQueryCache("payroll_dash");
+  return processed;
+}
+
+export async function fetchMonthlyAttendanceForEmployee(employeeId, monthYear, salonId = "default") {
+  const targetSalon = salonId || "default";
+  const cacheKey = `att_month_${targetSalon}_${employeeId}_${monthYear}`;
+  const cached = getCachedQuery(cacheKey);
+  if (cached) return cached;
+
+  return deduplicateRequest(cacheKey, async () => {
+    let remoteRecords = null;
+
+    if (supabaseConfigured && isUuid(employeeId)) {
+      try {
+        const { data, error } = await supabase
+          .from("attendance")
+          .select("*")
+          .eq("salon_id", targetSalon)
+          .eq("employee_id", employeeId)
+          .gte("attendance_date", `${monthYear}-01`)
+          .lte("attendance_date", `${monthYear}-31`);
+
+        if (!error && Array.isArray(data)) {
+          remoteRecords = data.map(a => ({
+            id: String(a.id),
+            employeeId: String(a.employee_id),
+            attendanceDate: a.attendance_date,
+            status: a.status,
+            workingHours: Number(a.working_hours || 0),
+            overtimeHours: Number(a.overtime_hours || 0),
+            isLate: Boolean(a.is_late),
+            notes: a.notes || ""
+          }));
+        }
+      } catch (err) {
+        console.warn("fetchMonthlyAttendanceForEmployee warning:", err);
+      }
+    }
+
+    const d = getLocalDemoData();
+    const localList = (d.attendance || []).filter(
+      a => String(a.employeeId) === String(employeeId) && (a.attendanceDate || "").startsWith(monthYear)
+    );
+
+    const attMap = new Map();
+    localList.forEach(a => attMap.set(a.attendanceDate, a));
+    if (Array.isArray(remoteRecords)) {
+      remoteRecords.forEach(a => attMap.set(a.attendanceDate, a));
+    }
+
+    const result = Array.from(attMap.values());
+    setCachedQuery(cacheKey, result);
+    return result;
+  });
+}
+
+// -------------------------------------------------------------
+// 4. Payroll Calculation Engine
+// -------------------------------------------------------------
+
+export function calculateEmployeeMonthlySalary(employee, monthlyAttendance = [], monthYear, payrollSettings = {}, manualAdjustments = {}) {
+  // 1. Determine days in month
+  const [yearStr, monthStr] = (monthYear || new Date().toISOString().slice(0, 7)).split("-");
+  const yr = Number(yearStr);
+  const mo = Number(monthStr);
+  const daysInMonth = new Date(yr, mo, 0).getDate(); // e.g. 30 in Nov, 31 in Dec
+
+  // 2. Determine divisor based on payroll settings
+  let calculationDays = 30;
+  const mode = payrollSettings.salaryDivisorMode || "CALENDAR_DAYS";
+  if (mode === "CALENDAR_DAYS") {
+    calculationDays = daysInMonth;
+  } else if (mode === "FIXED_30") {
+    calculationDays = 30;
+  } else if (mode === "FIXED_26") {
+    calculationDays = 26;
+  } else if (mode === "WORKING_DAYS") {
+    calculationDays = Number(employee.monthlyWorkingDays || 30);
+  }
+  if (!calculationDays || calculationDays < 1) calculationDays = 30;
+
+  // 3. Aggregate Attendance counts
+  let presentDays = 0;
+  let halfDays = 0;
+  let rawPaidLeaves = 0;
+  let rawUnpaidLeaves = 0;
+  let absentDays = 0;
+  let weeklyOffs = 0;
+  let holidays = 0;
+  let totalWorkingHours = 0;
+  let totalOvertimeHours = 0;
+
+  monthlyAttendance.forEach(a => {
+    switch (a.status) {
+      case "PRESENT":
+        presentDays += 1;
+        totalWorkingHours += Number(a.workingHours || 8);
+        break;
+      case "HALF_DAY":
+        halfDays += 1;
+        totalWorkingHours += Number(a.workingHours || 4);
+        break;
+      case "PAID_LEAVE":
+        rawPaidLeaves += 1;
+        break;
+      case "UNPAID_LEAVE":
+        rawUnpaidLeaves += 1;
+        break;
+      case "ABSENT":
+        absentDays += 1;
+        break;
+      case "WEEKLY_OFF":
+        weeklyOffs += 1;
+        break;
+      case "HOLIDAY":
+        holidays += 1;
+        break;
+      default:
+        break;
+    }
+    totalOvertimeHours += Number(a.overtimeHours || 0);
+  });
+
+  // Paid leaves allowance cap check
+  const allowedPaidLeaves = Number(employee.paidLeavesPerMonth !== undefined ? employee.paidLeavesPerMonth : 1);
+  const paidLeaves = Math.min(rawPaidLeaves, allowedPaidLeaves);
+  const excessPaidLeaves = Math.max(0, rawPaidLeaves - allowedPaidLeaves);
+  const unpaidLeaves = rawUnpaidLeaves + excessPaidLeaves;
+
+  const baseSalary = Number(employee.baseSalary || 0);
+  const salaryType = employee.salaryType || "MONTHLY";
+
+  let dailyRate = 0;
+  let hourlyRate = 0;
+  let basePayable = 0;
+  let absentDeduction = 0;
+  let halfDayDeduction = 0;
+  let unpaidLeaveDeduction = 0;
+  let payableDays = 0;
+
+  if (salaryType === "MONTHLY") {
+    dailyRate = Number((baseSalary / calculationDays).toFixed(2));
+    hourlyRate = Number((dailyRate / 8).toFixed(2));
+
+    const halfDayFactor = Number(payrollSettings.halfDayDeductionFactor ?? 0.50);
+    absentDeduction = Math.round(absentDays * dailyRate);
+    halfDayDeduction = Math.round(halfDays * (dailyRate * halfDayFactor));
+    unpaidLeaveDeduction = Math.round(unpaidLeaves * dailyRate);
+
+    const totalAttendanceDeduction = absentDeduction + halfDayDeduction + unpaidLeaveDeduction;
+    basePayable = Math.max(0, Math.round(baseSalary - totalAttendanceDeduction));
+
+    payableDays = Math.max(0, calculationDays - absentDays - (halfDays * halfDayFactor) - unpaidLeaves);
+  } else if (salaryType === "DAILY_WAGE") {
+    dailyRate = baseSalary;
+    hourlyRate = Number((dailyRate / 8).toFixed(2));
+
+    const weeklyOffPaidCount = payrollSettings.weeklyOffPaid ? weeklyOffs : 0;
+    const holidayPaidCount = payrollSettings.holidayPaid ? holidays : 0;
+
+    payableDays = presentDays + (halfDays * 0.5) + paidLeaves + weeklyOffPaidCount + holidayPaidCount;
+    basePayable = Math.round(payableDays * dailyRate);
+    absentDeduction = 0;
+    halfDayDeduction = 0;
+    unpaidLeaveDeduction = 0;
+  } else if (salaryType === "HOURLY") {
+    hourlyRate = baseSalary;
+    dailyRate = Number((hourlyRate * 8).toFixed(2));
+    payableDays = Number((totalWorkingHours / 8).toFixed(1));
+    basePayable = Math.round(totalWorkingHours * hourlyRate);
+    absentDeduction = 0;
+    halfDayDeduction = 0;
+    unpaidLeaveDeduction = 0;
+  }
+
+  // Overtime Calculation
+  const overtimeMultiplier = Number(payrollSettings.defaultOvertimeMultiplier ?? 1.5);
+  const configuredOvertimeRate = Number(employee.overtimeRate || 0);
+  const effectiveOvertimeRate = configuredOvertimeRate > 0 ? configuredOvertimeRate : Number((hourlyRate * overtimeMultiplier).toFixed(2));
+  const overtimeAmount = payrollSettings.overtimeEnabled !== false
+    ? Math.round(totalOvertimeHours * effectiveOvertimeRate)
+    : 0;
+
+  // Allowances & Adjustments
+  const fixedAllowance = Math.round(Number(employee.fixedAllowance || 0));
+  const bonus = Math.round(Number(manualAdjustments.bonus || 0));
+  const bonusReason = manualAdjustments.bonusReason || "";
+
+  const advanceDeduction = Math.round(Number(manualAdjustments.advanceDeduction || 0));
+  const otherDeductions = Math.round(Number(manualAdjustments.otherDeductions || 0));
+  const deductionReason = manualAdjustments.deductionReason || "";
+
+  const grossSalary = Math.round(basePayable + overtimeAmount + fixedAllowance + bonus);
+  const totalDeductions = Math.round(advanceDeduction + otherDeductions);
+  const netSalary = Math.max(0, grossSalary - totalDeductions);
+
+  return {
+    employeeId: employee.id,
+    employeeName: employee.name,
+    employeeMobile: employee.mobile,
+    jobRole: employee.jobRole,
+    salaryType,
+    baseSalary,
+    monthYear,
+    calculationDays,
+    presentDays,
+    halfDays,
+    paidLeaves,
+    unpaidLeaves,
+    absentDays,
+    weeklyOffs,
+    holidays,
+    payableDays,
+    dailyRate,
+    hourlyRate,
+    totalWorkingHours,
+    overtimeHours: totalOvertimeHours,
+    effectiveOvertimeRate,
+    overtimeAmount,
+    fixedAllowance,
+    bonus,
+    bonusReason,
+    absentDeduction,
+    halfDayDeduction,
+    unpaidLeaveDeduction,
+    advanceDeduction,
+    otherDeductions,
+    deductionReason,
+    grossSalary,
+    totalDeductions,
+    netSalary,
+    amountPaid: 0,
+    balancePending: netSalary,
+    paymentStatus: "PENDING",
+    calculationBreakdown: {
+      formula: salaryType === "MONTHLY"
+        ? `Base (₹${baseSalary}) - Absent (₹${absentDeduction}) - HalfDay (₹${halfDayDeduction}) - UnpaidLeave (₹${unpaidLeaveDeduction}) + OT (₹${overtimeAmount}) + Allowance (₹${fixedAllowance}) + Bonus (₹${bonus}) - Advances (₹${advanceDeduction}) - Deductions (₹${otherDeductions})`
+        : `Payable Days (${payableDays}) × Rate (₹${dailyRate || hourlyRate}) + OT (₹${overtimeAmount}) + Bonus (₹${bonus}) - Deductions (₹${totalDeductions})`,
+      divisor: calculationDays,
+      daysInMonth
+    }
+  };
+}
+
+// -------------------------------------------------------------
+// 5. Monthly Master Payroll Runs (Generate, Preview, Finalize & Reopen)
+// -------------------------------------------------------------
+
+export async function generateOrFetchMonthlyPayroll(monthYear, salonId = "default", actorInfo = null) {
+  const targetSalon = salonId || "default";
+  const cacheKey = `payroll_calc_${targetSalon}_${monthYear}`;
+  const cached = getCachedQuery(cacheKey);
+  if (cached) return cached;
+
+  return deduplicateRequest(cacheKey, async () => {
+    // Check if finalized payroll exists in Supabase
+    let existingPayroll = null;
+    let existingItems = [];
+
+  if (supabaseConfigured) {
+    try {
+      const { data: pData } = await supabase
+        .from("payrolls")
+        .select("*")
+        .eq("salon_id", targetSalon)
+        .eq("month_year", monthYear)
+        .maybeSingle();
+
+      if (pData) {
+        existingPayroll = pData;
+        const { data: iData } = await supabase
+          .from("payroll_items")
+          .select("*")
+          .eq("payroll_id", pData.id)
+          .order("employee_name", { ascending: true });
+
+        if (Array.isArray(iData)) {
+          existingItems = iData.map(i => ({
+            id: String(i.id),
+            payrollId: String(i.payroll_id),
+            employeeId: String(i.employee_id),
+            employeeName: i.employee_name,
+            employeeMobile: i.employee_mobile,
+            jobRole: i.job_role,
+            monthYear: i.month_year,
+            salaryType: i.salary_type,
+            baseSalary: Number(i.base_salary || 0),
+            calculationDays: Number(i.calculation_days || 30),
+            presentDays: Number(i.present_days || 0),
+            absentDays: Number(i.absent_days || 0),
+            halfDays: Number(i.half_days || 0),
+            paidLeaves: Number(i.paid_leaves || 0),
+            unpaidLeaves: Number(i.unpaid_leaves || 0),
+            weeklyOffs: Number(i.weekly_offs || 0),
+            holidays: Number(i.holidays || 0),
+            payableDays: Number(i.payable_days || 0),
+            dailyRate: Number(i.daily_rate || 0),
+            hourlyRate: Number(i.hourly_rate || 0),
+            overtimeHours: Number(i.overtime_hours || 0),
+            overtimeAmount: Number(i.overtime_amount || 0),
+            fixedAllowance: Number(i.fixed_allowance || 0),
+            bonus: Number(i.bonus || 0),
+            bonusReason: i.bonus_reason || "",
+            absentDeduction: Number(i.absent_deduction || 0),
+            halfDayDeduction: Number(i.half_day_deduction || 0),
+            advanceDeduction: Number(i.advance_deduction || 0),
+            otherDeductions: Number(i.other_deductions || 0),
+            deductionReason: i.deduction_reason || "",
+            grossSalary: Number(i.gross_salary || 0),
+            totalDeductions: Number(i.total_deductions || 0),
+            netSalary: Number(i.net_salary || 0),
+            amountPaid: Number(i.amount_paid || 0),
+            balancePending: Number(i.balance_pending || 0),
+            paymentStatus: i.payment_status || "PENDING",
+            calculationBreakdown: i.calculation_breakdown || {}
+          }));
+        }
+      }
+    } catch (err) {
+      console.warn("generateOrFetchMonthlyPayroll warning:", err);
+    }
+  }
+
+  // Fetch month salary payment records for this salon and month
+  const monthPayments = await fetchSalaryPaymentsForMonth(monthYear, targetSalon);
+
+  // If already finalized, return saved snapshot augmented with real-time disbursement totals
+  if (existingPayroll && existingPayroll.status === "FINALIZED") {
+    const updatedItems = existingItems.map(item => {
+      const empPmts = monthPayments.filter(p => String(p.employeeId) === String(item.employeeId));
+      const recordedPaid = empPmts.reduce((s, p) => s + Number(p.amount || 0), 0);
+      const effPaid = Math.max(Number(item.amountPaid || 0), recordedPaid);
+      const bal = Math.max(0, Number(item.netSalary || 0) - effPaid);
+      return {
+        ...item,
+        amountPaid: effPaid,
+        balancePending: bal,
+        paymentStatus: bal === 0 && effPaid > 0 ? "PAID" : effPaid > 0 ? "PARTIAL" : "PENDING"
+      };
+    });
+
+    const totExp = updatedItems.reduce((s, i) => s + Number(i.netSalary || 0), 0);
+    const totPaid = updatedItems.reduce((s, i) => s + Number(i.amountPaid || 0), 0);
+    const totPending = Math.max(0, totExp - totPaid);
+
+    const resFinal = {
+      payroll: {
+        id: String(existingPayroll.id),
+        salonId: existingPayroll.salon_id,
+        monthYear: existingPayroll.month_year,
+        status: existingPayroll.status,
+        totalSalaryExpense: totExp || Number(existingPayroll.total_salary_expense || 0),
+        totalPaid: totPaid,
+        totalPending: totPending,
+        employeeCount: Number(existingPayroll.employee_count || updatedItems.length),
+        finalizedAt: existingPayroll.finalized_at,
+        finalizedByName: existingPayroll.finalized_by_name
+      },
+      items: updatedItems,
+      isFinalized: true
+    };
+    setCachedQuery(cacheKey, resFinal);
+    return resFinal;
+  }
+
+  // Otherwise, compute real-time calculation preview
+  const [employees, payrollSettings] = await Promise.all([
+    fetchEmployees(targetSalon),
+    fetchSalonPayrollSettings(targetSalon)
+  ]);
+
+  const activeEmployees = employees.filter(e => e.status === "ACTIVE");
+  const d = getLocalDemoData();
+  const draftAdjMap = d.payrollDraftAdjustments || {};
+
+  // Fetch month attendance for all employees
+  const previewItems = await Promise.all(
+    activeEmployees.map(async emp => {
+      const att = await fetchMonthlyAttendanceForEmployee(emp.id, monthYear, targetSalon);
+      // Check existing manual adjustments if item was previously saved or adjusted in preview
+      const prev = existingItems.find(i => String(i.employeeId) === String(emp.id));
+      const draftAdj = draftAdjMap[String(emp.id)] || draftAdjMap[`pi_${emp.id}_${monthYear}`] || {};
+      const adjustments = {
+        bonus: prev?.bonus !== undefined ? prev.bonus : (draftAdj.bonus || 0),
+        bonusReason: prev?.bonusReason || draftAdj.bonusReason || "",
+        advanceDeduction: prev?.advanceDeduction !== undefined ? prev.advanceDeduction : (draftAdj.advanceDeduction || 0),
+        otherDeductions: prev?.otherDeductions !== undefined ? prev.otherDeductions : (draftAdj.otherDeductions || 0),
+        deductionReason: prev?.deductionReason || draftAdj.deductionReason || ""
+      };
+
+      const computed = calculateEmployeeMonthlySalary(emp, att, monthYear, payrollSettings, adjustments);
+      computed.id = prev?.id || `pi_${emp.id}_${monthYear}`;
+
+      // Aggregate all recorded salary disbursements for this employee and period
+      const empPmts = monthPayments.filter(p => String(p.employeeId) === String(emp.id));
+      const recordedPaid = empPmts.reduce((s, p) => s + Number(p.amount || 0), 0);
+      const effectivePaid = Math.max(Number(prev?.amountPaid || 0), recordedPaid);
+
+      computed.amountPaid = effectivePaid;
+      computed.balancePending = Math.max(0, computed.netSalary - effectivePaid);
+      computed.paymentStatus = (computed.balancePending === 0 && effectivePaid > 0)
+        ? "PAID"
+        : (effectivePaid > 0 ? "PARTIAL" : "PENDING");
+
+      return computed;
+    })
+  );
+
+  const totalSalaryExpense = previewItems.reduce((sum, i) => sum + i.netSalary, 0);
+  const totalPaid = previewItems.reduce((sum, i) => sum + (i.amountPaid || 0), 0);
+  const totalPending = Math.max(0, totalSalaryExpense - totalPaid);
+
+  const previewPayroll = {
+    id: existingPayroll?.id ? String(existingPayroll.id) : `pay_${targetSalon}_${monthYear}`,
+    salonId: targetSalon,
+    monthYear,
+    status: existingPayroll?.status || "DRAFT",
+    totalSalaryExpense,
+    totalPaid,
+    totalPending,
+    employeeCount: previewItems.length,
+    finalizedAt: null,
+    finalizedByName: null
+  };
+
+    const resDraft = {
+      payroll: previewPayroll,
+      items: previewItems,
+      isFinalized: false
+    };
+    setCachedQuery(cacheKey, resDraft);
+    return resDraft;
+  });
+}
+
+export async function updatePayrollItemAdjustments(payrollItemId, adjustments, actorInfo = null, salonId = "default") {
+  const targetSalon = salonId || "default";
+
+  if (supabaseConfigured && isUuid(payrollItemId)) {
+    try {
+      await supabase
+        .from("payroll_items")
+        .update({
+          bonus: Number(adjustments.bonus || 0),
+          bonus_reason: adjustments.bonusReason || null,
+          advance_deduction: Number(adjustments.advanceDeduction || 0),
+          other_deductions: Number(adjustments.otherDeductions || 0),
+          deduction_reason: adjustments.deductionReason || null,
+          updated_at: new Date().toISOString()
+        })
+        .eq("id", payrollItemId);
+    } catch (err) {
+      console.warn("updatePayrollItemAdjustments warning:", err);
+    }
+  }
+
+  // Persist adjustments in local draft cache so preview calculations reflect immediately
+  const d = getLocalDemoData();
+  if (!d.payrollDraftAdjustments) d.payrollDraftAdjustments = {};
+  d.payrollDraftAdjustments[String(payrollItemId)] = {
+    bonus: Number(adjustments.bonus || 0),
+    bonusReason: adjustments.bonusReason || "",
+    advanceDeduction: Number(adjustments.advanceDeduction || 0),
+    otherDeductions: Number(adjustments.otherDeductions || 0),
+    deductionReason: adjustments.deductionReason || ""
+  };
+  saveLocalDemoData(d);
+
+  logAuditEvent({
+    action: "PAYROLL_ADJUSTMENT",
+    entityType: "payroll_item",
+    entityId: String(payrollItemId),
+    userId: actorInfo?.id,
+    userName: actorInfo?.name,
+    userRole: actorInfo?.role,
+    salonId: targetSalon,
+    details: `Updated salary adjustments (Bonus: ₹${adjustments.bonus || 0}, Deductions: ₹${(Number(adjustments.advanceDeduction || 0) + Number(adjustments.otherDeductions || 0))}) for item #${payrollItemId}`
+  }).catch(() => {});
+
+  invalidateQueryCache("payroll");
+  invalidateQueryCache("payroll_dash");
+  return true;
+}
+
+export async function finalizeMonthlyPayroll(monthYear, payrollItems, actorInfo = null, salonId = "default") {
+  const targetSalon = salonId || "default";
+  const totalSalaryExpense = payrollItems.reduce((sum, i) => sum + Number(i.netSalary || 0), 0);
+  const totalPaid = payrollItems.reduce((sum, i) => sum + Number(i.amountPaid || 0), 0);
+  const totalPending = Math.max(0, totalSalaryExpense - totalPaid);
+
+  let finalizedPayrollId = null;
+
+  if (supabaseConfigured) {
+    try {
+      // 1. Upsert master payroll run
+      const { data: pData, error: pErr } = await supabase
+        .from("payrolls")
+        .upsert({
+          salon_id: targetSalon,
+          month_year: monthYear,
+          status: "FINALIZED",
+          total_salary_expense: totalSalaryExpense,
+          total_paid: totalPaid,
+          total_pending: totalPending,
+          employee_count: payrollItems.length,
+          finalized_at: new Date().toISOString(),
+          finalized_by: actorInfo?.id && isUuid(actorInfo.id) ? actorInfo.id : null,
+          finalized_by_name: actorInfo?.name || "Admin",
+          updated_at: new Date().toISOString()
+        }, { onConflict: "salon_id,month_year" })
+        .select()
+        .maybeSingle();
+
+      if (!pErr && pData) {
+        finalizedPayrollId = pData.id;
+
+        // 2. Upsert each snapshot item
+        const dbItems = payrollItems.map(item => ({
+          payroll_id: pData.id,
+          salon_id: targetSalon,
+          employee_id: item.employeeId,
+          employee_name: item.employeeName,
+          employee_mobile: item.employeeMobile,
+          job_role: item.jobRole,
+          month_year: monthYear,
+          salary_type: item.salaryType,
+          base_salary: item.baseSalary,
+          calculation_days: item.calculationDays,
+          present_days: item.presentDays,
+          absent_days: item.absentDays,
+          half_days: item.halfDays,
+          paid_leaves: item.paidLeaves,
+          unpaid_leaves: item.unpaidLeaves,
+          weekly_offs: item.weeklyOffs,
+          holidays: item.holidays,
+          payable_days: item.payableDays,
+          daily_rate: item.dailyRate,
+          hourly_rate: item.hourlyRate,
+          overtime_hours: item.overtimeHours,
+          overtime_amount: item.overtimeAmount,
+          fixed_allowance: item.fixedAllowance,
+          bonus: item.bonus,
+          bonus_reason: item.bonusReason,
+          absent_deduction: item.absentDeduction,
+          half_day_deduction: item.halfDayDeduction,
+          advance_deduction: item.advanceDeduction,
+          other_deductions: item.otherDeductions,
+          deduction_reason: item.deductionReason,
+          gross_salary: item.grossSalary,
+          total_deductions: item.totalDeductions,
+          net_salary: item.netSalary,
+          amount_paid: item.amountPaid,
+          balance_pending: item.balancePending,
+          payment_status: item.paymentStatus,
+          calculation_breakdown: item.calculationBreakdown,
+          updated_at: new Date().toISOString()
+        }));
+
+        await supabase
+          .from("payroll_items")
+          .upsert(dbItems, { onConflict: "employee_id,month_year" });
+      }
+    } catch (err) {
+      console.warn("finalizeMonthlyPayroll Supabase warning:", err);
+    }
+  }
+
+  // Update local demo cache
+  const d = getLocalDemoData();
+  if (!d.payrolls) d.payrolls = [];
+  if (!d.payrollItems) d.payrollItems = [];
+
+  const localPayroll = {
+    id: finalizedPayrollId || `pay_${targetSalon}_${monthYear}`,
+    salonId: targetSalon,
+    monthYear,
+    status: "FINALIZED",
+    totalSalaryExpense,
+    totalPaid,
+    totalPending,
+    employeeCount: payrollItems.length,
+    finalizedAt: new Date().toISOString(),
+    finalizedByName: actorInfo?.name || "Admin"
+  };
+
+  const pIdx = d.payrolls.findIndex(p => p.salonId === targetSalon && p.monthYear === monthYear);
+  if (pIdx >= 0) d.payrolls[pIdx] = localPayroll;
+  else d.payrolls.push(localPayroll);
+
+  payrollItems.forEach(i => {
+    const itemIdx = d.payrollItems.findIndex(x => x.employeeId === i.employeeId && x.monthYear === monthYear);
+    if (itemIdx >= 0) d.payrollItems[itemIdx] = { ...i, payrollId: localPayroll.id };
+    else d.payrollItems.push({ ...i, payrollId: localPayroll.id });
+  });
+
+  saveLocalDemoData(d);
+
+  logAuditEvent({
+    action: "PAYROLL_FINALIZED",
+    entityType: "payroll",
+    entityId: `${targetSalon}_${monthYear}`,
+    userId: actorInfo?.id,
+    userName: actorInfo?.name,
+    userRole: actorInfo?.role,
+    salonId: targetSalon,
+    details: `Finalized and locked monthly payroll for ${monthYear} (Total Expense: ₹${totalSalaryExpense.toLocaleString("en-IN")}, Employees: ${payrollItems.length})`
+  }).catch(() => {});
+
+  invalidateQueryCache("payroll");
+  invalidateQueryCache("payroll_dash");
+  return localPayroll;
+}
+
+export async function reopenMonthlyPayroll(monthYear, reason, actorInfo = null, salonId = "default") {
+  const targetSalon = salonId || "default";
+
+  if (supabaseConfigured) {
+    try {
+      await supabase
+        .from("payrolls")
+        .update({
+          status: "DRAFT",
+          reopened_at: new Date().toISOString(),
+          reopened_by: actorInfo?.id && isUuid(actorInfo.id) ? actorInfo.id : null,
+          reopen_reason: reason || "Manual correction",
+          updated_at: new Date().toISOString()
+        })
+        .eq("salon_id", targetSalon)
+        .eq("month_year", monthYear);
+    } catch (err) {
+      console.warn("reopenMonthlyPayroll Supabase warning:", err);
+    }
+  }
+
+  const d = getLocalDemoData();
+  if (d.payrolls) {
+    const pIdx = d.payrolls.findIndex(p => p.salonId === targetSalon && p.monthYear === monthYear);
+    if (pIdx >= 0) {
+      d.payrolls[pIdx].status = "DRAFT";
+      d.payrolls[pIdx].reopenReason = reason;
+      saveLocalDemoData(d);
+    }
+  }
+
+  logAuditEvent({
+    action: "PAYROLL_REOPENED",
+    entityType: "payroll",
+    entityId: `${targetSalon}_${monthYear}`,
+    userId: actorInfo?.id,
+    userName: actorInfo?.name,
+    userRole: actorInfo?.role,
+    salonId: targetSalon,
+    details: `Reopened finalized payroll for ${monthYear}. Reason: "${reason || 'Attendance or salary adjustment required'}"`
+  }).catch(() => {});
+
+  invalidateQueryCache("payroll");
+  invalidateQueryCache("payroll_dash");
+  return true;
+}
+
+// -------------------------------------------------------------
+// 6. Salary Payment Disbursement Records
+// -------------------------------------------------------------
+
+export async function fetchSalaryPaymentsForMonth(monthYear, salonId = "default") {
+  const targetSalon = salonId || "default";
+  const cacheKey = `sal_payments_${targetSalon}_${monthYear}`;
+  const cached = getCachedQuery(cacheKey);
+  if (cached) return cached;
+
+  return deduplicateRequest(cacheKey, async () => {
+    let remotePayments = [];
+
+    if (supabaseConfigured) {
+      try {
+        let query = supabase.from("salary_payments").select("*");
+        if (targetSalon !== "all") {
+          query = query.eq("salon_id", targetSalon);
+        }
+        const { data, error } = await query;
+        if (!error && Array.isArray(data)) {
+          remotePayments = data
+            .filter(p => {
+              const matchesMonth = p.month_year === monthYear || (p.payment_date && p.payment_date.startsWith(monthYear));
+              return matchesMonth;
+            })
+            .map(p => ({
+              id: String(p.id),
+              salonId: p.salon_id,
+              payrollItemId: p.payroll_item_id ? String(p.payroll_item_id) : null,
+              employeeId: String(p.employee_id),
+              amount: Number(p.amount || 0),
+              paymentMode: p.payment_mode,
+              paymentDate: p.payment_date,
+              monthYear: p.month_year || (p.payment_date ? p.payment_date.slice(0, 7) : monthYear),
+              transactionRef: p.transaction_ref || "",
+              notes: p.notes || "",
+              paidByName: p.paid_by_name || "Admin",
+              createdAt: p.created_at
+            }));
+        }
+      } catch (err) {
+        console.warn("fetchSalaryPaymentsForMonth warning:", err);
+      }
+    }
+
+    const d = getLocalDemoData();
+    const localList = (d.salaryPayments || [])
+      .filter(p => {
+        const matchSalon = targetSalon === "all" || p.salonId === targetSalon || !p.salonId;
+        const matchMonth = p.monthYear === monthYear || (p.paymentDate && p.paymentDate.startsWith(monthYear));
+        return matchSalon && matchMonth;
+      })
+      .map(p => ({
+        id: String(p.id),
+        salonId: p.salonId || targetSalon,
+        payrollItemId: p.payrollItemId ? String(p.payrollItemId) : null,
+        employeeId: String(p.employeeId),
+        amount: Number(p.amount || 0),
+        paymentMode: p.paymentMode || "Cash",
+        paymentDate: p.paymentDate,
+        monthYear: p.monthYear || (p.paymentDate ? p.paymentDate.slice(0, 7) : monthYear),
+        transactionRef: p.transactionRef || "",
+        notes: p.notes || "",
+        paidByName: p.paidByName || "Admin",
+        createdAt: p.createdAt
+      }));
+
+    const map = new Map();
+    localList.forEach(p => map.set(p.id, p));
+    remotePayments.forEach(p => map.set(p.id, p));
+    const result = Array.from(map.values());
+    setCachedQuery(cacheKey, result);
+    return result;
+  });
+}
+
+export async function recordSalaryPayment(paymentData, actorInfo = null, salonId = "default") {
+  const targetSalon = salonId || "default";
+  const amount = Math.round(Number(paymentData.amount || 0));
+  const mode = paymentData.paymentMode || "Cash";
+  const paymentDate = paymentData.paymentDate || new Date().toISOString().slice(0, 10);
+  const transactionRef = paymentData.transactionRef || "";
+  const notes = paymentData.notes || "";
+  const payrollItemId = paymentData.payrollItemId;
+  const employeeId = paymentData.employeeId;
+  const monthYear = paymentData.monthYear || (paymentDate ? paymentDate.slice(0, 7) : new Date().toISOString().slice(0, 7));
+
+  if (amount <= 0) throw new Error("Payment amount must be greater than zero.");
+
+  let savedPayment = null;
+
+  if (supabaseConfigured) {
+    try {
+      if (employeeId && isUuid(employeeId)) {
+        const payload = {
+          salon_id: targetSalon,
+          employee_id: employeeId,
+          amount,
+          payment_mode: mode,
+          payment_date: paymentDate,
+          month_year: monthYear,
+          transaction_ref: transactionRef || null,
+          notes: notes || null,
+          paid_by: actorInfo?.id && isUuid(actorInfo.id) ? actorInfo.id : null,
+          paid_by_name: actorInfo?.name || "Admin"
+        };
+
+        if (payrollItemId && isUuid(payrollItemId)) {
+          payload.payroll_item_id = payrollItemId;
+        }
+
+        const { data: pData, error: pErr } = await supabase
+          .from("salary_payments")
+          .insert(payload)
+          .select()
+          .maybeSingle();
+
+        if (!pErr && pData) {
+          savedPayment = pData;
+        } else if (pErr) {
+          console.warn("recordSalaryPayment primary insert warning:", pErr.message);
+          const fallbackPayload = { ...payload };
+          delete fallbackPayload.month_year;
+          const { data: retryData, error: retryErr } = await supabase
+            .from("salary_payments")
+            .insert(fallbackPayload)
+            .select()
+            .maybeSingle();
+          if (!retryErr && retryData) savedPayment = retryData;
+        }
+      }
+
+      // Update payroll item if payrollItemId is a real DB UUID
+      if (payrollItemId && isUuid(payrollItemId)) {
+        const { data: curItem } = await supabase
+          .from("payroll_items")
+          .select("net_salary, amount_paid, payroll_id")
+          .eq("id", payrollItemId)
+          .maybeSingle();
+
+        if (curItem) {
+          const newPaid = Number(curItem.amount_paid || 0) + amount;
+          const newBal = Math.max(0, Number(curItem.net_salary || 0) - newPaid);
+          const newStatus = newBal === 0 ? "PAID" : "PARTIAL";
+
+          await supabase
+            .from("payroll_items")
+            .update({
+              amount_paid: newPaid,
+              balance_pending: newBal,
+              payment_status: newStatus,
+              updated_at: new Date().toISOString()
+            })
+            .eq("id", payrollItemId);
+
+          if (curItem.payroll_id) {
+            const { data: allItems } = await supabase
+              .from("payroll_items")
+              .select("amount_paid, balance_pending")
+              .eq("payroll_id", curItem.payroll_id);
+
+            if (Array.isArray(allItems)) {
+              const totPaid = allItems.reduce((s, i) => s + Number(i.amount_paid || 0), 0);
+              const totPending = allItems.reduce((s, i) => s + Number(i.balance_pending || 0), 0);
+
+              await supabase
+                .from("payrolls")
+                .update({
+                  total_paid: totPaid,
+                  total_pending: totPending,
+                  updated_at: new Date().toISOString()
+                })
+                .eq("id", curItem.payroll_id);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("recordSalaryPayment Supabase warning:", err);
+    }
+  }
+
+  // Update local demo cache
+  const d = getLocalDemoData();
+  if (!d.salaryPayments) d.salaryPayments = [];
+  const localPayment = {
+    id: savedPayment?.id || `sp_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+    salonId: targetSalon,
+    payrollItemId,
+    employeeId,
+    monthYear,
+    amount,
+    paymentMode: mode,
+    paymentDate,
+    transactionRef,
+    notes,
+    paidByName: actorInfo?.name || "Admin",
+    createdAt: new Date().toISOString()
+  };
+  d.salaryPayments.push(localPayment);
+
+  // Update payroll items in cache if exists
+  if (d.payrollItems) {
+    const item = d.payrollItems.find(i => String(i.id) === String(payrollItemId) || (String(i.employeeId) === String(employeeId) && i.monthYear === monthYear));
+    if (item) {
+      item.amountPaid = Number(item.amountPaid || 0) + amount;
+      item.balancePending = Math.max(0, Number(item.netSalary || 0) - item.amountPaid);
+      item.paymentStatus = item.balancePending === 0 ? "PAID" : "PARTIAL";
+    }
+  }
+
+  saveLocalDemoData(d);
+
+  logAuditEvent({
+    action: "SALARY_PAYMENT",
+    entityType: "salary_payment",
+    entityId: String(payrollItemId || employeeId),
+    userId: actorInfo?.id,
+    userName: actorInfo?.name,
+    userRole: actorInfo?.role,
+    salonId: targetSalon,
+    details: `Disbursed salary of ₹${amount.toLocaleString("en-IN")} via ${mode} to employee #${employeeId} for period ${monthYear}`
+  }).catch(() => {});
+
+  invalidateQueryCache("payroll");
+  invalidateQueryCache("payroll_dash");
+  invalidateQueryCache("sal_payments");
+  return localPayment;
+}
+
+export async function fetchSalaryPaymentHistory(payrollItemIdOrId, salonId = "default", employeeId = null, monthYear = null) {
+  const targetSalon = salonId || "default";
+  let remotePayments = [];
+
+  if (supabaseConfigured) {
+    try {
+      let query = supabase.from("salary_payments").select("*");
+      if (targetSalon !== "all") {
+        query = query.eq("salon_id", targetSalon);
+      }
+      if (employeeId && isUuid(employeeId)) {
+        query = query.eq("employee_id", employeeId);
+      } else if (payrollItemIdOrId && isUuid(payrollItemIdOrId)) {
+        query = query.eq("payroll_item_id", payrollItemIdOrId);
+      }
+      const { data, error } = await query.order("created_at", { ascending: false });
+
+      if (!error && Array.isArray(data)) {
+        remotePayments = data.map(p => ({
+          id: String(p.id),
+          salonId: p.salon_id,
+          payrollItemId: p.payroll_item_id ? String(p.payroll_item_id) : null,
+          employeeId: String(p.employee_id),
+          amount: Number(p.amount || 0),
+          paymentMode: p.payment_mode,
+          paymentDate: p.payment_date,
+          monthYear: p.month_year || (p.payment_date ? p.payment_date.slice(0, 7) : ""),
+          transactionRef: p.transaction_ref || "",
+          notes: p.notes || "",
+          paidByName: p.paid_by_name || "Admin",
+          createdAt: p.created_at
+        }));
+      }
+    } catch (err) {
+      console.warn("fetchSalaryPaymentHistory warning:", err);
+    }
+  }
+
+  const d = getLocalDemoData();
+  const localList = (d.salaryPayments || [])
+    .filter(p => {
+      const matchEmp = employeeId ? String(p.employeeId) === String(employeeId) : false;
+      const matchItem = payrollItemIdOrId ? String(p.payrollItemId) === String(payrollItemIdOrId) : false;
+      return matchEmp || matchItem;
+    })
+    .map(p => ({
+      id: String(p.id),
+      salonId: p.salonId || targetSalon,
+      payrollItemId: p.payrollItemId ? String(p.payrollItemId) : null,
+      employeeId: String(p.employeeId),
+      amount: Number(p.amount || 0),
+      paymentMode: p.paymentMode || "Cash",
+      paymentDate: p.paymentDate,
+      monthYear: p.monthYear || (p.paymentDate ? p.paymentDate.slice(0, 7) : ""),
+      transactionRef: p.transactionRef || "",
+      notes: p.notes || "",
+      paidByName: p.paidByName || "Admin",
+      createdAt: p.createdAt
+    }));
+
+  const map = new Map();
+  localList.forEach(p => map.set(p.id, p));
+  remotePayments.forEach(p => map.set(p.id, p));
+
+  let results = Array.from(map.values());
+  if (monthYear) {
+    results = results.filter(p => p.monthYear === monthYear || (p.paymentDate && p.paymentDate.startsWith(monthYear)));
+  }
+  return results.sort((a, b) => new Date(b.paymentDate || b.createdAt) - new Date(a.paymentDate || a.createdAt));
+}
+
+// -------------------------------------------------------------
+// 7. Dashboard HR & Payroll Metrics
+// -------------------------------------------------------------
+
+export async function fetchPayrollDashboardMetrics(monthYear, salonId = "default") {
+  const targetSalon = salonId || "default";
+  const cacheKey = `payroll_dash_${targetSalon}_${monthYear}`;
+  const cached = getCachedQuery(cacheKey);
+  if (cached) return cached;
+
+  return deduplicateRequest(cacheKey, async () => {
+    const todayISO = new Date().toISOString().slice(0, 10);
+
+    const [employees, todayAttendance, payrollData] = await Promise.all([
+      fetchEmployees(targetSalon),
+      fetchAttendanceForDate(todayISO, targetSalon),
+      generateOrFetchMonthlyPayroll(monthYear, targetSalon)
+    ]);
+
+    const activeEmployees = employees.filter(e => e.status === "ACTIVE");
+    const presentToday = todayAttendance.filter(a => a.status === "PRESENT" || a.status === "HALF_DAY").length;
+    const absentToday = todayAttendance.filter(a => a.status === "ABSENT").length;
+
+    const totalExpense = payrollData.items.reduce((s, i) => s + Number(i.netSalary || 0), 0);
+    const paidSalary = payrollData.items.reduce((s, i) => s + Number(i.amountPaid || 0), 0);
+    const pendingSalary = Math.max(0, totalExpense - paidSalary);
+
+    const result = {
+      totalEmployees: activeEmployees.length,
+      presentToday,
+      absentToday,
+      monthlySalaryExpense: totalExpense,
+      paidSalary,
+      pendingSalary,
+      monthYear
+    };
+    setCachedQuery(cacheKey, result);
+    return result;
+  });
+}

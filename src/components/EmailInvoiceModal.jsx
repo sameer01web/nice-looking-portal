@@ -16,7 +16,7 @@ export default function EmailInvoiceModal({
   const [errorMsg, setErrorMsg] = useState("");
   const [successResult, setSuccessResult] = useState(null);
 
-  const shopName = invoice?.shopSettings?.shop_name || customSettings?.shop_name || customSettings?.name || "NICE LOOKING";
+  const shopName = invoice?.shopSettings?.shop_name || customSettings?.shop_name || customSettings?.name || "MY SALON";
   const invNumber = invoice?.invoiceNumber || invoice?.id || "NL-INV";
   const totalAmount = invoice?.total || invoice?.amount || 0;
 

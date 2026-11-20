@@ -303,7 +303,7 @@ export default function SalonManagement({
   function copyCredentialsToClipboard() {
     if (!credentialsModal) return;
     const loginUrl = getAppBaseUrl();
-    const text = `💈 NICE LOOKING PORTAL — SALON OWNER CREDENTIALS 💈\n\n🏢 Branch: ${credentialsModal.salonName}\n👑 Owner Name: ${credentialsModal.ownerName}\n✉️ Login ID: ${credentialsModal.email}\n🔑 Temporary Password: ${credentialsModal.tempPassword}\n🌐 Portal Login URL: ${loginUrl}\n\n⚠️ NOTE: You will be required to change this temporary password to your new permanent password on your first login.`;
+    const text = `💈 MY SALON PORTAL — SALON OWNER CREDENTIALS 💈\n\n🏢 Branch: ${credentialsModal.salonName}\n👑 Owner Name: ${credentialsModal.ownerName}\n✉️ Login ID: ${credentialsModal.email}\n🔑 Temporary Password: ${credentialsModal.tempPassword}\n🌐 Portal Login URL: ${loginUrl}\n\n⚠️ NOTE: You will be required to change this temporary password to your new permanent password on your first login.`;
 
     navigator.clipboard.writeText(text);
     setCopied(true);
@@ -532,7 +532,7 @@ export default function SalonManagement({
                       type="text"
                       required
                       disabled={Boolean(editingSalon && !isSuperAdmin)}
-                      placeholder="e.g. NICE LOOKING (Bandra)"
+                      placeholder="e.g. MY SALON (Bandra)"
                       value={name}
                       onChange={e => setName(e.target.value)}
                       style={editingSalon && !isSuperAdmin ? { background: "#f8fafc", cursor: "not-allowed", color: "#64748b", borderColor: "#e2e8f0" } : {}}
