@@ -560,23 +560,6 @@ export default function StaffManagement({
         </div>
 
         <div className="rbac-cards-grid">
-          {/* Level 1: Salon Owner */}
-          <div className="rbac-info-card rbac-card-owner">
-            <div className="rbac-card-header">
-              <div className="rbac-card-icon">⭐</div>
-              <div>
-                <h4>Salon Owner</h4>
-                <span className="rbac-sub">Business Owner</span>
-              </div>
-            </div>
-            <ul className="rbac-feature-list">
-              <li>Full control over assigned salon branch only</li>
-              <li>Provision branch staff accounts & temporary passwords</li>
-              <li>Isolated billing series, products & customer base</li>
-              <li>Cannot view or alter accounts of other salons</li>
-            </ul>
-          </div>
-
           {/* Level 3: Branch Admin */}
           <div className="rbac-info-card rbac-card-admin">
             <div className="rbac-card-header">
